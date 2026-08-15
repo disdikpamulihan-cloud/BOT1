@@ -1,193 +1,84 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-HIGH-FREQUENCY HIGH-ACCURACY MATRIX BOT - XAUUSD
-Features: Dynamic Model Loading + BB Z-Score + Volatility + Adaptive SL/TP
-"""
-
-import os
-import json
-import logging
-import requests
-import websocket
 import joblib
 import pandas as pd
-import numpy as np
-from datetime import datetime
+import logging
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-DERIV_APP_ID = "1089"
-DERIV_API_URL = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
-SYMBOL = "frxXAUUSD"
-
-PROB_THRESHOLD = 0.62   # Keyakinan AI minimal 62%
-SL_ATR_MULT = 1.5       # SL = 1.5 x ATR
-TP1_ATR_MULT = 1.5      # TP1 (Scalp) = 1.5 x ATR
-TP2_ATR_MULT = 3.0      # TP2 (Runner) = 3.0 x ATR
-
+# Set up logging untuk memantau eksekusi bot
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("\n--- NOTIFIKASI TELEGRAM ---")
-        print(message)
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        logging.error(f"Error Telegram: {e}")
+class DualMarketSignalBot:
+    def __init__(self, model_xau_path: str, model_vol_path: str):
+        """Memuat kedua model ML saat inisialisasi."""
+        try:
+            self.model_xauusd = joblib.load(model_xau_path)
+            self.model_vol80 = joblib.load(model_vol_path)
+            logging.info("Berhasil memuat model XAUUSD dan Volatility 80.")
+        except Exception as e:
+            logging.error(f"Gagal memuat model: {e}")
+            raise e
 
-def fetch_candles(granularity=900, count=100):
-    ws = websocket.create_connection(DERIV_API_URL, timeout=20)
-    req = {
-        "ticks_history": SYMBOL,
-        "adjust_start_time": 1,
-        "count": count,
-        "end": "latest",
-        "style": "candles",
-        "granularity": granularity
-    }
-    ws.send(json.dumps(req))
-    resp = ws.recv()
-    ws.close()
-    
-    data = json.loads(resp)
-    if "candles" not in data:
-        raise RuntimeError(f"Gagal mengambil data candle: {data}")
-    
-    df = pd.DataFrame(data["candles"])
-    df['time'] = pd.to_datetime(df['epoch'], unit='s')
-    df.set_index('time', inplace=True)
-    return df[['open', 'high', 'low', 'close']]
-
-def extract_features(df):
-    df = df.copy()
-    
-    # 1. Basic Return & Volatility
-    df['return'] = df['close'].pct_change()
-    df['volatility'] = (df['high'] - df['low']) / df['close']
-    df['high_low_ratio'] = df['volatility']
-    
-    # 2. RSI Wilder
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / (loss + 1e-9)
-    df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # 3. Bollinger Bands Z-Score (Penyebab KeyError Fix)
-    sma20 = df['close'].rolling(20).mean()
-    std20 = df['close'].rolling(20).std()
-    df['bb_zscore'] = (df['close'] - sma20) / (std20 + 1e-9)
-    
-    # 4. EMA Calculations
-    df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
-    
-    df['ema_ratio'] = df['ema_50'] / df['ema_200']
-    df['ema_diff'] = (df['ema_20'] - df['ema_200']) / df['ema_200']
-    
-    # 5. ATR Calculation
-    tr = pd.concat([df['high'] - df['low'], 
-                    (df['high'] - df['close'].shift(1)).abs(), 
-                    (df['low'] - df['close'].shift(1)).abs()], axis=1).max(axis=1)
-    df['atr'] = tr.rolling(14).mean()
-    
-    # 6. ADX Calculation
-    up_move = df['high'].diff()
-    down_move = df['low'].diff().abs()
-    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
-    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
-    
-    atr14 = tr.rolling(14).mean()
-    plus_di = 100 * (plus_dm.rolling(14).mean() / (atr14 + 1e-9))
-    minus_di = 100 * (minus_dm.rolling(14).mean() / (atr14 + 1e-9))
-    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9))
-    df['adx'] = dx.rolling(14).mean()
-
-    df.dropna(inplace=True)
-    return df
-
-def main():
-    model_file = "model_xauusd.pkl"
-    if not os.path.exists(model_file):
-        if os.path.exists("model_xauusd_99.pkl"):
-            model_file = "model_xauusd_99.pkl"
-        else:
-            logging.error("File model .pkl tidak ditemukan di repository!")
-            return
-
-    bundle = joblib.load(model_file)
-    
-    # Autodeteksi struktur model di pkl
-    if "lgb_model" in bundle:
-        model = bundle["lgb_model"]
-    elif "xgb_model" in bundle:
-        model = bundle["xgb_model"]
-    elif "model" in bundle:
-        model = bundle["model"]
-    else:
-        logging.error("Struktur bundle model tidak dikenali.")
-        return
-
-    scaler = bundle["scaler"]
-    features = bundle["features"]
-
-    # Ambil Data & Ekstrak Fitur
-    df_m15 = fetch_candles(granularity=900, count=100)
-    df_feat = extract_features(df_m15)
-    
-    # Pastikan seluruh fitur yang dibutuhkan model tersedia
-    last_row = df_feat[features].iloc[[-1]]
-    last_close = df_m15['close'].iloc[-1]
-    last_atr = df_feat['atr'].iloc[-1]
-    last_adx = df_feat['adx'].iloc[-1]
-
-    # Prediksi Probabilitas AI
-    X_scaled = scaler.transform(last_row.values)
-    prob_up = model.predict_proba(X_scaled)[0][1]
-
-    signal = "HOLD"
-    sl, tp1, tp2 = 0.0, 0.0, 0.0
-
-    # Logika Eksekusi Sinyal
-    if prob_up >= PROB_THRESHOLD:
-        signal = "BUY"
-        sl = last_close - (last_atr * SL_ATR_MULT)
-        tp1 = last_close + (last_atr * TP1_ATR_MULT)
-        tp2 = last_close + (last_atr * TP2_ATR_MULT)
-    elif prob_up <= (1.0 - PROB_THRESHOLD):
-        signal = "SELL"
-        sl = last_close + (last_atr * SL_ATR_MULT)
-        tp1 = last_close - (last_atr * TP1_ATR_MULT)
-        tp2 = last_close - (last_atr * TP2_ATR_MULT)
-
-    icon = "🟢" if signal == "BUY" else ("🔴" if signal == "SELL" else "⚪")
-    
-    msg = f"⚡ <b>AI MATRIX SIGNAL (XAUUSD)</b>\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"{icon} Sinyal Eksekusi: <b>{signal}</b>\n"
-    msg += f"💵 Harga Saat Ini: <code>{last_close:.2f}</code>\n"
-    msg += f"🧠 Keyakinan AI: <b>{max(prob_up, 1-prob_up) * 100:.1f}%</b>\n"
-    msg += f"📈 ADX Trend Strength: <b>{last_adx:.1f}</b>\n"
-    msg += f"-------------------------------------\n"
-    
-    if signal != "HOLD":
-        msg += f"🛑 Stop Loss (SL): <code>{sl:.2f}</code>\n"
-        msg += f"🎯 Target TP 1 (Scalp): <code>{tp1:.2f}</code>\n"
-        msg += f"🚀 Target TP 2 (Runner): <code>{tp2:.2f}</code>\n"
-    else:
-        msg += f"💡 <i>Status: WAIT & SEE (Kondisi belum memenuhi threshold {PROB_THRESHOLD*100:.0f}%)</i>\n"
+    def predict_xauusd(self, df_xau: pd.DataFrame) -> str:
+        """Proses dan prediksi untuk XAUUSD."""
+        # Pastikan kolom fitur sesuai dengan model XAUUSD
+        features_xau = ['Column_0', 'Column_1', 'Column_2', 'Column_3', 'Column_4']
+        input_data = df_xau[features_xau].tail(1)
         
-    msg += f"-------------------------------------\n"
-    msg += f"⏰ <i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB</i>"
+        prediction = self.model_xauusd.predict(input_data)[0]
+        
+        # Contoh pemetaan output model (1 = BUY, 0 = SELL)
+        return "BUY" if prediction == 1 else "SELL"
 
-    send_telegram(msg)
+    def predict_vol80(self, df_vol: pd.DataFrame) -> str:
+        """Proses dan prediksi untuk Volatility 80 Index."""
+        # Sesuaikan nama kolom fitur dengan model Volatility 80 milikmu
+        features_vol = ['vol_feature_0', 'vol_feature_1', 'vol_feature_2']
+        input_data = df_vol[features_vol].tail(1)
+        
+        prediction = self.model_vol80.predict(input_data)[0]
+        
+        # Contoh pemetaan output model
+        return "BUY" if prediction == 1 else "SELL"
 
+    def get_signals(self, market_data: dict) -> dict:
+        """Menghasilkan sinyal gabungan untuk kedua pasar."""
+        signals = {}
+        
+        if 'XAUUSD' in market_data:
+            signals['XAUUSD'] = self.predict_xauusd(market_data['XAUUSD'])
+            
+        if 'VOL80' in market_data:
+            signals['VOL80'] = self.predict_vol80(market_data['VOL80'])
+            
+        return signals
+
+
+# ==========================================
+# CONTOH PENGGUNAAN (Execution Logic)
+# ==========================================
 if __name__ == "__main__":
-    main()
+    # 1. Inisialisasi Bot dengan path model masing-masing
+    bot = DualMarketSignalBot(
+        model_xau_path='model_xauusd.pkl',
+        model_vol_path='model_vol80.pkl'
+    )
+    
+    # 2. Simulasi/Pengambilan Data Real-time (replace dengan API MT5 / Deriv kamu)
+    dummy_df_xau = pd.DataFrame({
+        'Column_0': [-1.2], 'Column_1': [0.5], 
+        'Column_2': [1.1], 'Column_3': [-0.4], 'Column_4': [1.86]
+    })
+    
+    dummy_df_vol = pd.DataFrame({
+        'vol_feature_0': [102.4], 'vol_feature_1': [0.03], 'vol_feature_2': [-0.8]
+    })
+    
+    market_payload = {
+        'XAUUSD': dummy_df_xau,
+        'VOL80': dummy_df_vol
+    }
+    
+    # 3. Eksekusi Prediksi
+    hasil_sinyal = bot.get_signals(market_payload)
+    
+    print("\n--- HASIL SINYAL HARI INI ---")
+    print(f"Sinyal XAUUSD : {hasil_sinyal.get('XAUUSD')}")
+    print(f"Sinyal VOL80  : {hasil_sinyal.get('VOL80')}")
