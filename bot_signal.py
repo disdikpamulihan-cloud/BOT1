@@ -16,26 +16,48 @@ class DualMarketSignalBot:
             logging.error(f"Gagal memuat model: {e}")
             raise e
 
+    def _extract_model(self, model_obj):
+        """Fungsi pembantu untuk mengambil estimator dari dictionary jika berupa dict."""
+        if isinstance(model_obj, dict):
+            # Mengambil model dari key umum seperti 'model', 'estimator', atau 'lgbm'
+            for key in ['model', 'estimator', 'lgbm', 'classifier']:
+                if key in model_obj:
+                    return model_obj[key]
+            # Jika key tidak ditemukan, ambil value pertama dalam dictionary
+            return list(model_obj.values())[0]
+        return model_obj
+
     def predict_xauusd(self, df_xau: pd.DataFrame) -> str:
         """Proses dan prediksi untuk XAUUSD."""
-        # Pastikan kolom fitur sesuai dengan model XAUUSD
         features_xau = ['Column_0', 'Column_1', 'Column_2', 'Column_3', 'Column_4']
         input_data = df_xau[features_xau].tail(1)
         
-        prediction = self.model_xauusd.predict(input_data)[0]
+        # Ekstrak model aktual jika self.model_xauusd berupa dictionary
+        actual_model = self._extract_model(self.model_xauusd)
         
-        # Contoh pemetaan output model (1 = BUY, 0 = SELL)
+        # Optional: Jika ada preprocessing 'scaler' di dalam dict pkl
+        if isinstance(self.model_xauusd, dict) and 'scaler' in self.model_xauusd:
+            input_data = self.model_xauusd['scaler'].transform(input_data)
+        
+        prediction = actual_model.predict(input_data)[0]
+        
+        # Pemetaan output model (1 = BUY, 0 = SELL)
         return "BUY" if prediction == 1 else "SELL"
 
     def predict_vol80(self, df_vol: pd.DataFrame) -> str:
         """Proses dan prediksi untuk Volatility 80 Index."""
-        # Sesuaikan nama kolom fitur dengan model Volatility 80 milikmu
         features_vol = ['vol_feature_0', 'vol_feature_1', 'vol_feature_2']
         input_data = df_vol[features_vol].tail(1)
         
-        prediction = self.model_vol80.predict(input_data)[0]
+        # Ekstrak model aktual jika self.model_vol80 berupa dictionary
+        actual_model = self._extract_model(self.model_vol80)
         
-        # Contoh pemetaan output model
+        # Optional: Jika ada preprocessing 'scaler' di dalam dict pkl
+        if isinstance(self.model_vol80, dict) and 'scaler' in self.model_vol80:
+            input_data = self.model_vol80['scaler'].transform(input_data)
+        
+        prediction = actual_model.predict(input_data)[0]
+        
         return "BUY" if prediction == 1 else "SELL"
 
     def get_signals(self, market_data: dict) -> dict:
@@ -51,17 +73,12 @@ class DualMarketSignalBot:
         return signals
 
 
-# ==========================================
-# CONTOH PENGGUNAAN (Execution Logic)
-# ==========================================
 if __name__ == "__main__":
-    # 1. Inisialisasi Bot dengan path model masing-masing
     bot = DualMarketSignalBot(
         model_xau_path='model_xauusd.pkl',
         model_vol_path='model_vol80.pkl'
     )
     
-    # 2. Simulasi/Pengambilan Data Real-time (replace dengan API MT5 / Deriv kamu)
     dummy_df_xau = pd.DataFrame({
         'Column_0': [-1.2], 'Column_1': [0.5], 
         'Column_2': [1.1], 'Column_3': [-0.4], 'Column_4': [1.86]
@@ -76,7 +93,6 @@ if __name__ == "__main__":
         'VOL80': dummy_df_vol
     }
     
-    # 3. Eksekusi Prediksi
     hasil_sinyal = bot.get_signals(market_payload)
     
     print("\n--- HASIL SINYAL HARI INI ---")
