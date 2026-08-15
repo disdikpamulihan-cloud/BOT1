@@ -67,11 +67,12 @@ class DualMarketSignalBot:
 
 def send_telegram_message(message: str):
     """Mengirim pesan notifikasi ke Telegram."""
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    # Menyesuaikan nama variabel dengan YAML: TELEGRAM_TOKEN
+    bot_token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not bot_token or not chat_id:
-        logging.warning("TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum diatur di Secrets!")
+        logging.warning("TELEGRAM_TOKEN atau TELEGRAM_CHAT_ID tidak ditemukan di environment variables!")
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -84,15 +85,15 @@ def send_telegram_message(message: str):
     try:
         response = requests.post(url, json=payload)
         if response.status_code == 200:
-            logging.info("Notifikasi Telegram berhasil dikirim.")
+            logging.info("Notifikasi Telegram berhasil dikirim!")
         else:
-            logging.error(f"Gagal mengirim notifikasi Telegram: {response.text}")
+            logging.error(f"Gagal mengirim notifikasi Telegram. Status Code: {response.status_code}, Respon: {response.text}")
     except Exception as e:
         logging.error(f"Error saat menghubungi Telegram API: {e}")
 
 
 # ==========================================
-# CONTOH PENGGUNAAN (Execution Logic)
+# EXECUTION LOGIC
 # ==========================================
 if __name__ == "__main__":
     bot = DualMarketSignalBot(
@@ -117,12 +118,12 @@ if __name__ == "__main__":
     
     hasil_sinyal = bot.get_signals(market_payload)
     
-    # Format pesan Telegram
+    # Format pesan yang dikirim ke Telegram
     pesan = (
-        "📊 **SINYAL TRADING HARI INI** 📊\n\n"
-        f"🟡 **XAUUSD**: `{hasil_sinyal.get('XAUUSD', 'N/A')}`\n"
-        f"📈 **VOL80**: `{hasil_sinyal.get('VOL80', 'N/A')}`"
+        "🚨 **SINYAL TRADING BARU** 🚨\n\n"
+        f"🥇 **XAU/USD**: `{hasil_sinyal.get('XAUUSD', 'N/A')}`\n"
+        f"📊 **VOLATILITY 80**: `{hasil_sinyal.get('VOL80', 'N/A')}`"
     )
     
-    # Kirim notifikasi ke Telegram
+    # Eksekusi kirim pesan
     send_telegram_message(pesan)
