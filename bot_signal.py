@@ -1,6 +1,8 @@
 import joblib
 import pandas as pd
 import logging
+import os
+import requests
 
 # Set up logging untuk memantau eksekusi bot
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,7 +34,6 @@ class DualMarketSignalBot:
         
         actual_model = self._extract_model(self.model_xauusd)
         
-        # Gunakan .values untuk mencegah warning/error pada StandardScaler
         if isinstance(self.model_xauusd, dict) and 'scaler' in self.model_xauusd:
             input_data = self.model_xauusd['scaler'].transform(input_data.values)
         
@@ -41,13 +42,11 @@ class DualMarketSignalBot:
 
     def predict_vol80(self, df_vol: pd.DataFrame) -> str:
         """Proses dan prediksi untuk Volatility 80 Index."""
-        # Menggunakan 5 kolom fitur yang sama persis dengan yang diharapkan StandardScaler & LGBM
         features_vol = ['Column_0', 'Column_1', 'Column_2', 'Column_3', 'Column_4']
         input_data = df_vol[features_vol].tail(1)
         
         actual_model = self._extract_model(self.model_vol80)
         
-        # Gunakan .values untuk mencegah ValueError 3 vs 5 features
         if isinstance(self.model_vol80, dict) and 'scaler' in self.model_vol80:
             input_data = self.model_vol80['scaler'].transform(input_data.values)
         
@@ -66,6 +65,31 @@ class DualMarketSignalBot:
             
         return signals
 
+def send_telegram_message(message: str):
+    """Mengirim pesan notifikasi ke Telegram."""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id:
+        logging.warning("TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum diatur di Secrets!")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            logging.info("Notifikasi Telegram berhasil dikirim.")
+        else:
+            logging.error(f"Gagal mengirim notifikasi Telegram: {response.text}")
+    except Exception as e:
+        logging.error(f"Error saat menghubungi Telegram API: {e}")
+
 
 # ==========================================
 # CONTOH PENGGUNAAN (Execution Logic)
@@ -76,13 +100,11 @@ if __name__ == "__main__":
         model_vol_path='model_vol80.pkl'
     )
     
-    # Dummy data 5 kolom untuk XAUUSD
     dummy_df_xau = pd.DataFrame({
         'Column_0': [-1.2], 'Column_1': [0.5], 
         'Column_2': [1.1], 'Column_3': [-0.4], 'Column_4': [1.86]
     })
     
-    # Dummy data 5 kolom untuk VOL80
     dummy_df_vol = pd.DataFrame({
         'Column_0': [-0.5], 'Column_1': [1.2], 
         'Column_2': [-1.8], 'Column_3': [0.9], 'Column_4': [0.1]
@@ -95,6 +117,12 @@ if __name__ == "__main__":
     
     hasil_sinyal = bot.get_signals(market_payload)
     
-    print("\n--- HASIL SINYAL HARI INI ---")
-    print(f"Sinyal XAUUSD : {hasil_sinyal.get('XAUUSD')}")
-    print(f"Sinyal VOL80  : {hasil_sinyal.get('VOL80')}")
+    # Format pesan Telegram
+    pesan = (
+        "📊 **SINYAL TRADING HARI INI** 📊\n\n"
+        f"🟡 **XAUUSD**: `{hasil_sinyal.get('XAUUSD', 'N/A')}`\n"
+        f"📈 **VOL80**: `{hasil_sinyal.get('VOL80', 'N/A')}`"
+    )
+    
+    # Kirim notifikasi ke Telegram
+    send_telegram_message(pesan)
