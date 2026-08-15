@@ -32,7 +32,7 @@ class DualMarketSignalBot:
         
         actual_model = self._extract_model(self.model_xauusd)
         
-        # Menggunakan .values untuk menghindari warning nama fitur pada StandardScaler
+        # Gunakan .values untuk mencegah warning/error pada StandardScaler
         if isinstance(self.model_xauusd, dict) and 'scaler' in self.model_xauusd:
             input_data = self.model_xauusd['scaler'].transform(input_data.values)
         
@@ -41,13 +41,13 @@ class DualMarketSignalBot:
 
     def predict_vol80(self, df_vol: pd.DataFrame) -> str:
         """Proses dan prediksi untuk Volatility 80 Index."""
-        # Disesuaikan menjadi 5 fitur sesuai ekspektasi StandardScaler (5 kolom)
-        features_vol = ['vol_feature_0', 'vol_feature_1', 'vol_feature_2', 'vol_feature_3', 'vol_feature_4']
+        # Menggunakan 5 kolom fitur yang sama persis dengan yang diharapkan StandardScaler & LGBM
+        features_vol = ['Column_0', 'Column_1', 'Column_2', 'Column_3', 'Column_4']
         input_data = df_vol[features_vol].tail(1)
         
         actual_model = self._extract_model(self.model_vol80)
         
-        # Menggunakan .values untuk menghindari ValueError dan warning nama fitur
+        # Gunakan .values untuk mencegah ValueError 3 vs 5 features
         if isinstance(self.model_vol80, dict) and 'scaler' in self.model_vol80:
             input_data = self.model_vol80['scaler'].transform(input_data.values)
         
@@ -76,15 +76,16 @@ if __name__ == "__main__":
         model_vol_path='model_vol80.pkl'
     )
     
-    # Dummy data dengan masing-masing 5 kolom fitur
+    # Dummy data 5 kolom untuk XAUUSD
     dummy_df_xau = pd.DataFrame({
         'Column_0': [-1.2], 'Column_1': [0.5], 
         'Column_2': [1.1], 'Column_3': [-0.4], 'Column_4': [1.86]
     })
     
+    # Dummy data 5 kolom untuk VOL80
     dummy_df_vol = pd.DataFrame({
-        'vol_feature_0': [102.4], 'vol_feature_1': [0.03], 
-        'vol_feature_2': [-0.8], 'vol_feature_3': [1.5], 'vol_feature_4': [-0.2]
+        'Column_0': [-0.5], 'Column_1': [1.2], 
+        'Column_2': [-1.8], 'Column_3': [0.9], 'Column_4': [0.1]
     })
     
     market_payload = {
