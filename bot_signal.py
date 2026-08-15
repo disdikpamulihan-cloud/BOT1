@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 HIGH-FREQUENCY HIGH-ACCURACY MATRIX BOT - XAUUSD
-Target: Maksimalisasi Frekuensi Sinyal dengan Filter Konsensus AI
+Features: Dynamic XGBoost/LightGBM Loading + ADX Sideways Filter + Multi-Target TP
 """
 
 import os
@@ -22,11 +22,11 @@ DERIV_APP_ID = "1089"
 DERIV_API_URL = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
 SYMBOL = "frxXAUUSD"
 
-# Ambang Batas Disesuaikan untuk Keseimbangan Frekuensi & Akurasi
-PROB_THRESHOLD = 0.62   # Keyakinan AI Minimal 62%
-SL_ATR_MULT = 1.5       # SL Lebih Rapat untuk Mengurangi Risiko
-TP1_ATR_MULT = 1.5      # TP1 Cepat Tersentuh (Akurasi Tinggi)
-TP2_ATR_MULT = 3.0      # TP2 Target Maksimal
+# Parameter Risiko & Probabilitas AI
+PROB_THRESHOLD = 0.62   # Keyakinan AI minimal 62%
+SL_ATR_MULT = 1.5       # SL Rapat = 1.5 x ATR
+TP1_ATR_MULT = 1.5      # TP1 (Scalp Risk Free) = 1.5 x ATR
+TP2_ATR_MULT = 3.0      # TP2 (Trend Runner) = 3.0 x ATR
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -42,7 +42,7 @@ def send_telegram(message):
     except Exception as e:
         logging.error(f"Error Telegram: {e}")
 
-def fetch_candles(granularity, count=100):
+def fetch_candles(granularity=900, count=100):
     ws = websocket.create_connection(DERIV_API_URL, timeout=20)
     req = {
         "ticks_history": SYMBOL,
@@ -55,9 +55,11 @@ def fetch_candles(granularity, count=100):
     ws.send(json.dumps(req))
     resp = ws.recv()
     ws.close()
+    
     data = json.loads(resp)
     if "candles" not in data:
-        raise RuntimeError(f"Gagal mengambil data candle ({granularity}s): {data}")
+        raise RuntimeError(f"Gagal mengambil data candle: {data}")
+    
     df = pd.DataFrame(data["candles"])
     df['time'] = pd.to_datetime(df['epoch'], unit='s')
     df.set_index('time', inplace=True)
@@ -68,17 +70,20 @@ def extract_features(df):
     df['return'] = df['close'].pct_change()
     df['high_low_ratio'] = (df['high'] - df['low']) / df['close']
     
+    # RSI Wilder
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / (loss + 1e-9)
     df['rsi'] = 100 - (100 / (1 + rs))
     
+    # ATR & EMA Ratios
     df['atr'] = (df['high'] - df['low']).rolling(14).mean()
     df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
     df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
     df['ema_ratio'] = df['ema_50'] / df['ema_200']
     
+    # ADX Calculation
     up_move = df['high'].diff()
     down_move = df['low'].diff().abs()
     plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
@@ -100,15 +105,30 @@ def extract_features(df):
 def main():
     model_file = "model_xauusd.pkl"
     if not os.path.exists(model_file):
-        logging.error(f"File '{model_file}' tidak ditemukan!")
-        return
+        # Fallback jika nama file menggunakan versi 99
+        if os.path.exists("model_xauusd_99.pkl"):
+            model_file = "model_xauusd_99.pkl"
+        else:
+            logging.error("File model .pkl tidak ditemukan di repository!")
+            return
 
     bundle = joblib.load(model_file)
-    model = bundle["model"]
+    
+    # Deteksi struktur bundle (Single model atau Multi-model XGBoost/LGBM)
+    if "model" in bundle:
+        model = bundle["model"]
+    elif "lgb_model" in bundle:
+        model = bundle["lgb_model"]
+    elif "xgb_model" in bundle:
+        model = bundle["xgb_model"]
+    else:
+        logging.error("Struktur bundle model tidak dikenali.")
+        return
+
     scaler = bundle["scaler"]
     features = bundle["features"]
 
-    # Pindai Timeframe M15
+    # Ambil Data & Ekstrak Fitur M15
     df_m15 = fetch_candles(granularity=900, count=100)
     df_feat = extract_features(df_m15)
     
@@ -117,12 +137,14 @@ def main():
     last_atr = df_feat['atr'].iloc[-1]
     last_adx = df_feat['adx'].iloc[-1]
 
+    # Prediksi Probabilitas
     X_scaled = scaler.transform(last_row.values)
     prob_up = model.predict_proba(X_scaled)[0][1]
 
     signal = "HOLD"
     sl, tp1, tp2 = 0.0, 0.0, 0.0
 
+    # Logika Eksekusi Sinyal
     if prob_up >= PROB_THRESHOLD and last_adx >= 20.0:
         signal = "BUY"
         sl = last_close - (last_atr * SL_ATR_MULT)
