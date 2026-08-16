@@ -13,20 +13,19 @@ import pytz
 # Set up logging profesional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class DualMarketSignalBot:
+class SuperAIXAUUSDBot:
     """
-    BOT 1: Upgrade to Deriv WebSocket Live Feed for XAUUSD & Volatility 80 (Synced with MT5)
+    SUPER AI TRADING BOT: Dedicated XAUUSD High-Precision Signal Generator
+    Fokus khusus XAUUSD, Filter High Confidence, Target Minimal 50 Pips, & Ciri Notifikasi Kontras.
     """
-    def __init__(self, model_xau_path: str, model_vol_path: str):
-        """Memuat kedua model ML saat inisialisasi."""
-        self.model_xauusd = self._safe_load(model_xau_path)
-        self.model_vol80 = self._safe_load(model_vol_path)
+    def __init__(self, model_path: str = "model_xauusd.pkl"):
+        self.model_xauusd = self._safe_load(model_path)
 
     def _safe_load(self, path):
         if path and os.path.exists(path):
             try:
                 model = joblib.load(path)
-                logging.info(f"✅ Sukses memuat model AI dari {path}")
+                logging.info(f"✅ Sukses memuat model AI XAUUSD dari {path}")
                 return model
             except Exception as e:
                 logging.warning(f"⚠️ Gagal memuat model dari {path}: {e}")
@@ -40,16 +39,9 @@ class DualMarketSignalBot:
             return list(model_obj.values())[0]
         return model_obj
 
-    def fetch_deriv_candles(self, symbol: str, count: int = 100) -> pd.DataFrame:
-        """
-        Menerik data candles real-time langsung dari Deriv WebSocket dengan multi-symbol fallback 
-        supaya akurat sinkron jeung MT5.
-        """
-        if symbol == 'XAUUSD':
-            symbols_to_try = ["frxXAUUSD", "XAUUSD", "gold"]
-        else:
-            symbols_to_try = ["R_80", "R80", "VOLT80"]
-
+    def fetch_deriv_candles(self, count: int = 100) -> pd.DataFrame:
+        """Menarik data candles XAUUSD real-time langsung dari Deriv WebSocket."""
+        symbols_to_try = ["frxXAUUSD", "XAUUSD", "gold"]
         app_id = "1089"
         ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
         
@@ -61,7 +53,7 @@ class DualMarketSignalBot:
                     "ticks_history": deriv_symbol,
                     "count": count,
                     "end": "latest",
-                    "granularity": 60, # TF 1 Menit supados hargana peka & akurat
+                    "granularity": 60, # TF 1 Menit
                     "style": "candles"
                 }
                 ws.send(json.dumps(req))
@@ -74,7 +66,7 @@ class DualMarketSignalBot:
                     df['Close'] = df['Close'].astype(float)
                     df['High'] = df['High'].astype(float)
                     df['Low'] = df['Low'].astype(float)
-                    logging.info(f"✅ Sukses tarik data {symbol} via simbol: {deriv_symbol}")
+                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol}")
                     return df
             except Exception as e:
                 logging.warning(f"⚠️ Gagal dengan simbol {deriv_symbol}: {e}")
@@ -87,11 +79,9 @@ class DualMarketSignalBot:
                         
         return pd.DataFrame()
 
-    def extract_features_and_indicators(self, df: pd.DataFrame, symbol: str):
+    def extract_features_and_indicators(self, df: pd.DataFrame):
         if df.empty or len(df) < 30:
-            default_price = 4375.97 if symbol == 'XAUUSD' else 250357.0
-            default_atr = 5.0 if symbol == 'XAUUSD' else 500.0
-            return None, default_price, default_atr, 50.0
+            return None, 4375.97, 5.0, 50.0, 0.0
 
         close = np.array(df['Close'].values, dtype=float).ravel()
         high = np.array(df['High'].values, dtype=float).ravel()
@@ -109,7 +99,11 @@ class DualMarketSignalBot:
         tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
         atr = float(np.mean(tr[-14:]) if len(tr) >= 14 else (high[-1] - low[-1]))
 
-        # Fitur input dinamis tina datacandles asli
+        # 3. MACD Sederhana untuk konfirmasi momentum
+        ema12 = pd.Series(close).ewm(span=12, adjust=False).mean().iloc[-1]
+        ema26 = pd.Series(close).ewm(span=26, adjust=False).mean().iloc[-1]
+        macd = float(ema12 - ema26)
+
         features = pd.DataFrame([{
             'Column_0': (close[-1] - close[-2]) / close[-2],
             'Column_1': (close[-1] - close[-5]) / close[-5],
@@ -118,64 +112,67 @@ class DualMarketSignalBot:
             'Column_4': np.std(close[-10:]) / current_price
         }])
 
-        return features, current_price, atr, rsi
+        return features, current_price, atr, rsi, macd
 
-    def predict_market(self, symbol: str, model_wrapper) -> dict:
-        """Kalkulasi sinyal, keyakinan AI, indikator, dan manajemen risiko berdasarkan data real-time."""
+    def evaluate_market(self) -> dict:
+        """Kalkulasi sinyal XAUUSD presisi tinggi & validasi target minimal 50 pips."""
+        df = self.fetch_deriv_candles()
+        input_df, current_price, atr, rsi, macd = self.extract_features_and_indicators(df)
         
-        # Tarik data candles real-time via WebSocket
-        df = self.fetch_deriv_candles(symbol)
-        input_df, current_price, atr, rsi = self.extract_features_and_indicators(df, symbol)
-        
-        actual_model = self._extract_model(model_wrapper)
-        
+        actual_model = self._extract_model(self.model_xauusd)
+        confidence = 55.0
+        prediction = 1
+
         if actual_model is not None and input_df is not None:
             try:
-                if isinstance(model_wrapper, dict) and 'scaler' in model_wrapper:
-                    input_data = model_wrapper['scaler'].transform(input_df.values)
+                if isinstance(self.model_xauusd, dict) and 'scaler' in self.model_xauusd:
+                    input_data = self.model_xauusd['scaler'].transform(input_df.values)
                 else:
                     input_data = input_df.values
                 
                 prediction = actual_model.predict(input_data)[0]
-                signal = "BUY" if prediction == 1 else "SELL"
-                
-                confidence = 65.0
                 if hasattr(actual_model, "predict_proba"):
                     probs = actual_model.predict_proba(input_data)[0]
                     confidence = float(max(probs) * 100)
             except Exception as e:
-                logging.warning(f"⚠️ Prediksi model error ({e}), menggunakan fallback indikator RSI.")
-                signal = "BUY" if rsi < 50 else "SELL"
-                confidence = 55.0
+                logging.warning(f"⚠️ Prediksi model error ({e}), menggunakan fallback indikator.")
+                prediction = 1 if rsi < 50 else 0
+                confidence = 60.0
         else:
-            signal = "BUY" if rsi < 50 else "SELL"
-            confidence = 55.0
+            prediction = 1 if rsi < 50 else 0
+            confidence = 60.0
 
-        # ATR-based Dynamic SL & TP (Supados adaptif jeung volatilitas pasar)
-        if symbol == 'XAUUSD':
-            sl_distance = max(atr * 1.5, 6.0)
-            tp1_distance = sl_distance * 1.0
-            tp2_distance = sl_distance * 2.0
-        else:
-            sl_distance = max(atr * 1.5, 150.0)
-            tp1_distance = sl_distance * 1.0
-            tp2_distance = sl_distance * 2.0
+        signal = "BUY" if prediction == 1 else "SELL"
+
+        # Dynamic Risk Management XAUUSD (Target minimal setara 50 pips / 5.0 poin)
+        sl_distance = max(atr * 1.2, 4.0)
+        tp1_distance = max(sl_distance * 1.5, 5.0) 
+        tp2_distance = tp1_distance * 2.0
 
         if signal == "BUY":
             sl = current_price - sl_distance
             tp1 = current_price + tp1_distance
             tp2 = current_price + tp2_distance
-        else: # SELL
+        else:
             sl = current_price + sl_distance
             tp1 = current_price - tp1_distance
             tp2 = current_price - tp2_distance
 
+        # FILTER KETAT: Keyakinan >= 75% & Target Minimal 50 Pips tercapai
+        min_target_pips = 5.0
+        is_high_probability = (confidence >= 75.0) and (tp1_distance >= min_target_pips)
+        is_momentum_strong = abs(macd) > (atr * 0.03)
+
+        valid_signal = is_high_probability and is_momentum_strong
+
         return {
+            "valid": valid_signal,
             "signal": signal,
             "price": current_price,
             "confidence": confidence,
             "rsi": rsi,
             "atr": atr,
+            "macd": macd,
             "sl": sl,
             "tp1": tp1,
             "tp2": tp2
@@ -198,43 +195,50 @@ def send_telegram_message(message: str):
     }
     
     try:
-        requests.post(url, json=payload, timeout=5)
-        logging.info("Notifikasi Telegram berhasil terkirim.")
+        res = requests.post(url, json=payload, timeout=5)
+        if res.status_code == 200:
+            logging.info("Notifikasi Telegram berhasil terkirim.")
+        else:
+            logging.error(f"Gagal kirim pesan Telegram: {res.text}")
     except Exception as e:
         logging.error(f"Error Telegram API: {e}")
 
-def format_signal_card(symbol: str, res: dict) -> str:
-    """Format tampilan pesan Telegram."""
+def format_signal_card(res: dict) -> str:
+    """Format tampilan pesan Telegram khusus XAUUSD dengan ciri kontras BUY vs SELL."""
     wib_tz = pytz.timezone('Asia/Jakarta')
     wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
     
-    dec = 2
-    
+    if res['signal'] == "BUY":
+        signal_badge = "🟢🟢 **[STRONG BUY - LONG]** 🟢🟢"
+        action_desc = "Target XAUUSD siap MEROKET naik (Target >50 Pips)! 🚀"
+    else:
+        signal_badge = "🔴🔴 **[STRONG SELL - SHORT]** 🔴🔴"
+        action_desc = "Target XAUUSD siap TERJUN bebas (Target >50 Pips)! 📉"
+
     return (
-        f"🤖 *AI MATRIX SIGNAL ({symbol})*\n"
+        f"🤖 *[SUPER AI XAUUSD BOT]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *Sinyal Eksekusi*: `{res['signal']}`\n"
-        f"💵 *Harga Real-Time MT5 Feed*: `{res['price']:.{dec}f}`\n"
-        f"🔥 *Keyakinan AI*: `{res['confidence']:.1f}%`\n"
-        f"📊 *RSI (14)*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
+        f"🎯 *Sinyal Eksekusi*: {signal_badge}\n"
+        f"💡 *Analisis*: `{action_desc}`\n"
+        f"💵 *Harga Real-Time*: `{res['price']:.2f}`\n"
+        f"🔥 *Keyakinan AI (High Conf)*: `{res['confidence']:.1f}%`\n"
+        f"📊 *RSI*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
         "-------------------------------------\n"
-        f"🔴 *Stop Loss (SL)*: `{res['sl']:.{dec}f}`\n"
-        f"🟢 *Target TP 1 (Scalp)*: `{res['tp1']:.{dec}f}`\n"
-        f"🟢 *Target TP 2 (Runner)*: `{res['tp2']:.{dec}f}`\n"
+        f"🛑 *Stop Loss (Anti-SL)*: `{res['sl']:.2f}`\n"
+        f"🟢 *Target TP 1 (Aman)*: `{res['tp1']:.2f}`\n"
+        f"🚀 *Target TP 2 (Runner)*: `{res['tp2']:.2f}`\n"
         "-------------------------------------\n"
         f"⏰ `{wib_time}`"
     )
 
 if __name__ == "__main__":
-    bot = DualMarketSignalBot(
-        model_xau_path='model_xauusd.pkl',
-        model_vol_path='model_vol80.pkl'
-    )
+    bot = SuperAIXAUUSDBot(model_path='model_xauusd.pkl')
     
-    # 1. Kalkulasi sinyal & harga real-time via WebSocket Deriv (sinkron MT5)
-    res_xau = bot.predict_market('XAUUSD', bot.model_xauusd)
-    res_vol = bot.predict_market('VOLATILITY 80', bot.model_vol80)
+    res = bot.evaluate_market()
     
-    # 2. Kirim pesan ke Telegram
-    send_telegram_message(format_signal_card('XAUUSD', res_xau))
-    send_telegram_message(format_signal_card('VOLATILITY 80', res_vol))
+    if res["valid"]:
+        msg = format_signal_card(res)
+        send_telegram_message(msg)
+        logging.info("✅ Sinyal XAUUSD valid & terkirim!")
+    else:
+        logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target pips <50).")
