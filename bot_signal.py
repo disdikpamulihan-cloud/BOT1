@@ -9,7 +9,7 @@ import websocket
 import ssl
 from datetime import datetime, time
 import pytz
-import time as t_sleep
+import time as time_module  # Dirobah supaya teu tabrakan
 
 # Set up logging profesional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -296,5 +296,5 @@ if __name__ == "__main__":
         else:
             logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target pips <50).")
 
-        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar
-        t_sleep(60)
+        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar (Menggunakan time_module)
+        time_module.sleep(60)
