@@ -7,8 +7,9 @@ import requests
 import json
 import websocket
 import ssl
-from datetime import datetime
+from datetime import datetime, time
 import pytz
+import time as t_sleep
 
 # Set up logging profesional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,10 +17,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class SuperAIXAUUSDBot:
     """
     SUPER AI TRADING BOT: Dedicated XAUUSD High-Precision Signal Generator
-    Fokus khusus XAUUSD, Filter High Confidence, Target Minimal 50 Pips, & Ciri Notifikasi Kontras.
+    Dilengkapi Startup Notification, Scheduled Daily Check (06:00 WIB), & MT5 Price Comparison.
     """
     def __init__(self, model_path: str = "model_xauusd.pkl"):
         self.model_xauusd = self._safe_load(model_path)
+        self.wib_tz = pytz.timezone('Asia/Jakarta')
 
     def _safe_load(self, path):
         if path and os.path.exists(path):
@@ -204,7 +206,7 @@ def send_telegram_message(message: str):
         logging.error(f"Error Telegram API: {e}")
 
 def format_signal_card(res: dict) -> str:
-    """Format tampilan pesan Telegram khusus XAUUSD dengan ciri kontras BUY vs SELL."""
+    """Format tampilan pesan Telegram khusus XAUUSD dengan perbandingan harga MT5."""
     wib_tz = pytz.timezone('Asia/Jakarta')
     wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
     
@@ -216,11 +218,12 @@ def format_signal_card(res: dict) -> str:
         action_desc = "Target XAUUSD siap TERJUN bebas (Target >50 Pips)! 📉"
 
     return (
-        f"🤖 *[SUPER AI XAUUSD BOT]*\n"
+        f"🤖 *[SUPER AI XAUUSD BOT - SIGNAL]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *Sinyal Eksekusi*: {signal_badge}\n"
         f"💡 *Analisis*: `{action_desc}`\n"
-        f"💵 *Harga Real-Time*: `{res['price']:.2f}`\n"
+        f"💵 *Harga WebSocket (Feed Bot)*: `{res['price']:.2f}`\n"
+        f"🔍 *(Cocokkeun jeung Harga Bid/Ask MT5)*\n"
         f"🔥 *Keyakinan AI (High Conf)*: `{res['confidence']:.1f}%`\n"
         f"📊 *RSI*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
         "-------------------------------------\n"
@@ -231,14 +234,67 @@ def format_signal_card(res: dict) -> str:
         f"⏰ `{wib_time}`"
     )
 
+def send_startup_notification():
+    """Mengirim notifikasi bahwa bot berhasil di-start / jalan."""
+    wib_tz = pytz.timezone('Asia/Jakarta')
+    wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
+    msg = (
+        f"🚀 *[SYSTEM STARTUP]*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ *Super AI XAUUSD Bot* parantos sukses diaktifkeun!\n"
+        "🛡️ Sistem siap ngawas pasar & nyaring sinyal beresiko rendah.\n"
+        f"⏰ `{wib_time}`"
+    )
+    send_telegram_message(msg)
+
+def send_daily_report(bot_instance):
+    """Mengirim laporan rutin jam 06.00 WIB beserta harga terkini."""
+    df = bot_instance.fetch_deriv_candles(count=5)
+    _, current_price, atr, rsi, _ = bot_instance.extract_features_and_indicators(df)
+    
+    wib_tz = pytz.timezone('Asia/Jakarta')
+    wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
+    
+    msg = (
+        f"🌅 *[LAPORAN RUTIN SUBUH - 06:00 WIB]*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🟢 *Bot Status*: `AKTIF & SIAGA`\n"
+        f"💵 *Harga Terkini XAUUSD (Feed)*: `{current_price:.2f}`\n"
+        f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
+        f"📊 *RSI Saat Ini*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
+        "-------------------------------------\n"
+        "☕ Siap-siap ngantosan sinyal high-conviction dinten ieu!\n"
+        f"⏰ `{wib_time}`"
+    )
+    send_telegram_message(msg)
+
 if __name__ == "__main__":
     bot = SuperAIXAUUSDBot(model_path='model_xauusd.pkl')
     
-    res = bot.evaluate_market()
+    # 1. Kirim notif startup pas bot mimiti jalan
+    send_startup_notification()
     
-    if res["valid"]:
-        msg = format_signal_card(res)
-        send_telegram_message(msg)
-        logging.info("✅ Sinyal XAUUSD valid & terkirim!")
-    else:
-        logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target pips <50).")
+    # Variabel pelacak laporan harian supaya teu ngirim sababaraha kali di jam 06.00
+    last_daily_report_date = None
+
+    # Loop utama monitoring (Bisa dijalankeun salawasna di VPS)
+    while True:
+        now_wib = datetime.now(bot.wib_tz)
+        
+        # Cek naha geus waktuna laporan rutin jam 06.00 WIB
+        if now_wib.hour == 6 and now_wib.minute == 0:
+            if last_daily_report_date != now_wib.date():
+                send_daily_report(bot)
+                last_daily_report_date = now_wib.date()
+
+        # Evaluasi pasar berkala
+        res = bot.evaluate_market()
+        if res["valid"]:
+            msg = format_signal_card(res)
+            send_telegram_message(msg)
+            logging.info("✅ Sinyal XAUUSD valid & terkirim!")
+        else:
+            logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target pips <50).")
+
+        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar
+        t_sleep(60)
