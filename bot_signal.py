@@ -9,7 +9,7 @@ import websocket
 import ssl
 from datetime import datetime, time
 import pytz
-import time as time_module  # Dirobah supaya teu tabrakan
+import time as time_module
 
 # Set up logging profesional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class SuperAIXAUUSDBot:
     """
     SUPER AI TRADING BOT: Dedicated XAUUSD High-Precision Signal Generator
-    Dilengkapi Startup Notification, Scheduled Daily Check (06:00 WIB), & MT5 Price Comparison.
+    Dilengkapi Startup Notification dengan Harga Real-Time, Target TP Minimal 100 Pips, & Scheduled Daily Check.
     """
     def __init__(self, model_path: str = "model_xauusd.pkl"):
         self.model_xauusd = self._safe_load(model_path)
@@ -117,7 +117,7 @@ class SuperAIXAUUSDBot:
         return features, current_price, atr, rsi, macd
 
     def evaluate_market(self) -> dict:
-        """Kalkulasi sinyal XAUUSD presisi tinggi & validasi target minimal 50 pips."""
+        """Kalkulasi sinyal XAUUSD presisi tinggi & validasi target minimal 100 pips (10 poin)."""
         df = self.fetch_deriv_candles()
         input_df, current_price, atr, rsi, macd = self.extract_features_and_indicators(df)
         
@@ -146,9 +146,9 @@ class SuperAIXAUUSDBot:
 
         signal = "BUY" if prediction == 1 else "SELL"
 
-        # Dynamic Risk Management XAUUSD (Target minimal setara 50 pips / 5.0 poin)
-        sl_distance = max(atr * 1.2, 4.0)
-        tp1_distance = max(sl_distance * 1.5, 5.0) 
+        # Dynamic Risk Management XAUUSD (Target minimal setara 100 pips / 10.0 poin)
+        sl_distance = max(atr * 1.2, 5.0)
+        tp1_distance = max(sl_distance * 1.5, 10.0)  # Minimal 10.0 poin (100 pips)
         tp2_distance = tp1_distance * 2.0
 
         if signal == "BUY":
@@ -160,8 +160,8 @@ class SuperAIXAUUSDBot:
             tp1 = current_price - tp1_distance
             tp2 = current_price - tp2_distance
 
-        # FILTER KETAT: Keyakinan >= 75% & Target Minimal 50 Pips tercapai
-        min_target_pips = 5.0
+        # FILTER KETAT: Keyakinan >= 75% & Target Minimal 100 Pips tercapai
+        min_target_pips = 10.0
         is_high_probability = (confidence >= 75.0) and (tp1_distance >= min_target_pips)
         is_momentum_strong = abs(macd) > (atr * 0.03)
 
@@ -206,16 +206,16 @@ def send_telegram_message(message: str):
         logging.error(f"Error Telegram API: {e}")
 
 def format_signal_card(res: dict) -> str:
-    """Format tampilan pesan Telegram khusus XAUUSD dengan perbandingan harga MT5."""
+    """Format tampilan pesan Telegram khusus XAUUSD dengan target min 100 pips."""
     wib_tz = pytz.timezone('Asia/Jakarta')
     wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
     
     if res['signal'] == "BUY":
         signal_badge = "🟢🟢 **[STRONG BUY - LONG]** 🟢🟢"
-        action_desc = "Target XAUUSD siap MEROKET naik (Target >50 Pips)! 🚀"
+        action_desc = "Target XAUUSD siap MEROKET naik (Target >100 Pips)! 🚀"
     else:
         signal_badge = "🔴🔴 **[STRONG SELL - SHORT]** 🔴🔴"
-        action_desc = "Target XAUUSD siap TERJUN bebas (Target >50 Pips)! 📉"
+        action_desc = "Target XAUUSD siap TERJUN bebas (Target >100 Pips)! 📉"
 
     return (
         f"🤖 *[SUPER AI XAUUSD BOT - SIGNAL]*\n"
@@ -234,15 +234,22 @@ def format_signal_card(res: dict) -> str:
         f"⏰ `{wib_time}`"
     )
 
-def send_startup_notification():
-    """Mengirim notifikasi bahwa bot berhasil di-start / jalan."""
+def send_startup_notification(bot_instance):
+    """Mengirim notifikasi startup lengkap dengan harga real-time terkini."""
+    df = bot_instance.fetch_deriv_candles(count=5)
+    _, current_price, atr, rsi, _ = bot_instance.extract_features_and_indicators(df)
+    
     wib_tz = pytz.timezone('Asia/Jakarta')
     wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
+    
     msg = (
         f"🚀 *[SYSTEM STARTUP]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "✅ *Super AI XAUUSD Bot* parantos sukses diaktifkeun!\n"
-        "🛡️ Sistem siap ngawas pasar & nyaring sinyal beresiko rendah.\n"
+        f"💵 *Harga Real-Time XAUUSD*: `{current_price:.2f}`\n"
+        f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
+        f"📊 *RSI*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
+        "🛡️ Sistem siap ngawas pasar & nyaring sinyal TP >100 pips.\n"
         f"⏰ `{wib_time}`"
     )
     send_telegram_message(msg)
@@ -271,8 +278,8 @@ def send_daily_report(bot_instance):
 if __name__ == "__main__":
     bot = SuperAIXAUUSDBot(model_path='model_xauusd.pkl')
     
-    # 1. Kirim notif startup pas bot mimiti jalan
-    send_startup_notification()
+    # 1. Kirim notif startup lengkep sareng harga real-time
+    send_startup_notification(bot)
     
     # Variabel pelacak laporan harian supaya teu ngirim sababaraha kali di jam 06.00
     last_daily_report_date = None
@@ -294,7 +301,7 @@ if __name__ == "__main__":
             send_telegram_message(msg)
             logging.info("✅ Sinyal XAUUSD valid & terkirim!")
         else:
-            logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target pips <50).")
+            logging.info("⏳ Market XAUUSD di-skip (Belum memenuhi syarat keyakinan >75% / target TP <100 pips).")
 
-        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar (Menggunakan time_module)
+        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar
         time_module.sleep(60)
