@@ -15,15 +15,12 @@ import time as time_module
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class SniperXAUUSDBot:
-    """
-    SNIPER XAUUSD AI BOT: Dedicated High-Precision Signal Generator via Deriv WebSocket.
-    Dilengkapi AI Model Integration, Anti-State Memory, & Reversal Alert.
-    """
     def __init__(self, model_path: str = "model_xauusd.pkl"):
         self.model_xauusd = self._safe_load(model_path)
         self.wib_tz = pytz.timezone('Asia/Jakarta')
         self.state_file = "sniper_state.json"
         self.startup_file = "sniper_startup.json"
+        self.warning_state_file = "sniper_warning_state.json"
 
     def _safe_load(self, path):
         if path and os.path.exists(path):
@@ -36,7 +33,6 @@ class SniperXAUUSDBot:
         return None
 
     def fetch_market_data(self, count: int = 250) -> pd.DataFrame:
-        """Menarik data candles XAUUSD real-time tina WebSocket Deriv kalayan sistem Retry."""
         symbols = ["frxXAUUSD", "XAUUSD", "gold"]
         app_id = "1089"
         ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
@@ -62,12 +58,8 @@ class SniperXAUUSDBot:
                         df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'}, inplace=True)
                         for col in ['Close', 'Open', 'High', 'Low']:
                             df[col] = df[col].astype(float)
-                        
-                        current_p = df['Close'].iloc[-1]
-                        logging.info(f"✅ Sukses tarik data XAUUSD via Deriv WS ({s}) | Harga Terkini: {current_p:.2f}")
                         return df
                 except Exception as e:
-                    logging.warning(f"⚠️ Gagal narik data {s} (Attempt {attempt+1}): {e}")
                     time_module.sleep(2)
                 finally:
                     if ws:
@@ -75,8 +67,6 @@ class SniperXAUUSDBot:
                         except: pass
             if attempt < 2:
                 time_module.sleep(3)
-                    
-        logging.error("❌ Gagal total narik data pasar via WebSocket Deriv!")
         return pd.DataFrame()
 
     def load_last_signal(self) -> str:
@@ -100,21 +90,19 @@ class SniperXAUUSDBot:
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_sniper_strategy(self) -> dict:
+    def analyze_market_condition(self) -> dict:
+        """Fungsi pikeun nganalisis pasar sarta ngadeteksi potensi sinyal sateuacanna (Persiapan OP)."""
         df = self.fetch_market_data(count=250)
         if df.empty or len(df) < 205:
-            return {"valid": False}
+            return {"valid": False, "warning": False}
 
-        # 1. Anti-Repainting: Ngan ukur ngolah candle anu geus tutup
         df_closed = df.iloc[:-1] 
-        
         close = df_closed['Close']
         high = df_closed['High']
         low = df_closed['Low']
         open_p = df_closed['Open']
         current_price = df['Close'].iloc[-1]
 
-        # 2. Indikator Pendukung (MA-200, MA-50, ATR, RSI)
         ma200 = close.rolling(window=200).mean().iloc[-1]
         ma50 = close.rolling(window=50).mean().iloc[-1]
         
@@ -129,137 +117,99 @@ class SniperXAUUSDBot:
         highest_high_5 = np.max(high.values[-6:-1])
         lowest_low_5 = np.min(low.values[-6:-1])
 
-        # Syarat Eksekusi Sniper Dasar
-        is_buy_signal = (
-            (current_price > ma200) and
-            (current_price > highest_high_5) and 
-            (body_size > (avg_body * 1.2)) and 
-            (atr >= 0.5) and 
-            (close.iloc[-1] > open_p.iloc[-1])
-        )
+        is_buy = (current_price > ma200) and (current_price > highest_high_5) and (atr >= 0.5)
+        is_sell = (current_price < ma200) and (current_price < lowest_low_5) and (atr >= 0.5)
 
-        is_sell_signal = (
-            (current_price < ma200) and
-            (current_price < lowest_low_5) and 
-            (body_size > (avg_body * 1.2)) and 
-            (atr >= 0.5) and 
-            (close.iloc[-1] < open_p.iloc[-1])
-        )
-
-        # Integrasi Model AI (Kirim 5 Fitur pas akurat sareng train_ai.py)
+        # Cek Prediksi AI lamun aya
+        ai_approval = True
         if self.model_xauusd is not None:
             try:
-                # 5 Fitur: [ATR, BodySize, Jarak MA200, Jarak MA50, RSI]
-                features = np.array([[
-                    float(atr), 
-                    float(body_size), 
-                    float(current_price - ma200), 
-                    float(current_price - ma50),
-                    float(rsi)
-                ]])
-                
+                features = np.array([[float(atr), float(body_size), float(current_price - ma200), float(current_price - ma50), float(rsi)]])
                 ai_pred = self.model_xauusd.predict(features)[0]
-                
-                if ai_pred == 0: # Upami AI nyatakeun turun/tidak layak BUY
-                    is_buy_signal = False
-                elif ai_pred == 1: # Upami AI nyatakeun naik/tidak layak SELL
-                    is_sell_signal = False
-            except Exception as e:
-                logging.warning(f"⚠️ Catetan prediksi AI: {e}")
+                if is_buy and ai_pred == 0: ai_approval = False
+                if is_sell and ai_pred == 1: ai_approval = False
+            except: pass
+
+        # Validasi Sinyal Matang (Full OP)
+        is_buy_signal = is_buy and ai_approval and (body_size > (avg_body * 1.2)) and (close.iloc[-1] > open_p.iloc[-1])
+        is_sell_signal = is_sell and ai_approval and (body_size > (avg_body * 1.2)) and (close.iloc[-1] < open_p.iloc[-1])
 
         if is_buy_signal:
-            return {
-                "valid": True, "signal": "BUY", "price": current_price,
-                "atr": atr, "sl": current_price - (atr * 1.5), "tp": current_price + (atr * 3.0)
-            }
+            return {"valid": True, "warning": False, "signal": "BUY", "price": current_price, "atr": atr, "sl": current_price - (atr * 1.5), "tp": current_price + (atr * 3.0)}
         elif is_sell_signal:
-            return {
-                "valid": True, "signal": "SELL", "price": current_price,
-                "atr": atr, "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)
-            }
+            return {"valid": True, "warning": False, "signal": "SELL", "price": current_price, "atr": atr, "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)}
 
-        return {"valid": False}
+        # Deteksi Persiapan (Warning 5 Menit sateuacan matang)
+        is_warning_buy = is_buy and ai_approval and (close.iloc[-1] > open_p.iloc[-1])
+        is_warning_sell = is_sell and ai_approval and (close.iloc[-1] < open_p.iloc[-1])
+
+        if is_warning_buy:
+            return {"valid": False, "warning": True, "signal": "BUY", "price": current_price, "atr": atr}
+        elif is_warning_sell:
+            return {"valid": False, "warning": True, "signal": "SELL", "price": current_price, "atr": atr}
+
+        return {"valid": False, "warning": False}
 
 def send_telegram(message: str):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        logging.warning("TELEGRAM_TOKEN atau TELEGRAM_CHAT_ID tidak terdeteksi.")
-        return
+    if not token or not chat_id: return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        res = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
-        if res.status_code == 200:
-            logging.info("Notifikasi Telegram berhasil terkirim.")
-        else:
-            logging.error(f"Gagal kirim pesan Telegram: {res.text}")
-    except Exception as e:
-        logging.error(f"Error Telegram API: {e}")
+        requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
+    except: pass
+
+def format_warning_card(res: dict) -> str:
+    wib = datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%H:%M:%S WIB')
+    sig = res['signal']
+    return (
+        f"⚠️ *[PERSIAPAN OP XAUUSD]* ⚠️\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 *Aba-aba*: Tendensi pasar nuju nyiapkeun sinyal *{sig}*!\n"
+        f"💵 *Harga Pantau*: `{res['price']:.2f}`\n"
+        f"📊 *ATR*: `{res['atr']:.2f}`\n"
+        "💡 *Saran*: Siapkeun posisi, kantosan konfirmasi 1-2 candle deui!\n"
+        f"⏰ *WAKTU*: `{wib}`"
+    )
 
 def format_sniper_card(res: dict, is_reversal: bool = False) -> str:
-    wib_tz = pytz.timezone('Asia/Jakarta')
-    wib = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
-    
-    badge = "🟢🟢 **[AI SNIPER: LAWAN ARAH / REVERSAL BUY]** 🟢🟢" if res['signal'] == "BUY" and is_reversal else \
-            ("🔴🔴 **[AI SNIPER: LAWAN ARAH / REVERSAL SELL]** 🔴🔴" if res['signal'] == "SELL" and is_reversal else \
-            ("🟢🟢 **[AI SNIPER EXCLUSIVE: STRONG BUY]** 🟢🟢" if res['signal'] == "BUY" else "🔴🔴 **[AI SNIPER EXCLUSIVE: STRONG SELL]** 🔴🔴"))
-
+    wib = datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M:%S WIB')
+    badge = "🟢🟢 **[AI SNIPER: STRONG BUY]** 🟢🟢" if res['signal'] == "BUY" else "🔴🔴 **[AI SNIPER: STRONG SELL]** 🔴🔴"
     return (
-        f"🔥 *[XAUUSD AI SNIPER SYSTEM]*\n"
+        f"🔥 *[EKSEKUSI OP XAUUSD]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *EKSEKUSI*: {badge}\n"
-        f"💵 *Harga Masuk*: `{res['price']:.2f}`\n"
-        f"📊 *ATR*: `{res['atr']:.2f}`\n"
+        f"🎯 *STATUS*: {badge}\n"
+        f"💵 *Harga Masuk (OP)*: `{res['price']:.2f}`\n"
+        f"🛑 *Stop Loss*: `{res['sl']:.2f}`\n"
+        f"🎯 *Take Profit*: `{res['tp']:.2f}`\n"
         "-------------------------------------\n"
-        f"🛑 *Stop Loss (Dynamic)*: `{res['sl']:.2f}`\n"
-        f"🎯 *Take Profit (Dynamic)*: `{res['tp']:.2f}`\n"
-        "-------------------------------------\n"
-        f"⏰ *WAKTU*: `{wib}`"
+        f"⏰ *WAKTU EKSEKUSI*: `{wib}`"
     )
 
 if __name__ == "__main__":
     bot = SniperXAUUSDBot(model_path='model_xauusd.pkl')
-    now_wib = datetime.now(bot.wib_tz)
-
-    # 1. Startup Notification (Sakali)
-    if not os.path.exists(bot.startup_file):
-        df_s = bot.fetch_market_data(count=5)
-        p_s = float(df_s['Close'].iloc[-1]) if not df_s.empty else 0.0
-        send_telegram(f"🚀 *[AI SNIPER BOT AKTIF]*\n✅ Sistem Siap Tempur!\n💵 Harga XAUUSD: `{p_s:.2f}`\n⏰ `{now_wib.strftime('%H:%M:%S WIB')}`")
-        try:
-            with open(bot.startup_file, "w") as f: json.dump({"ok": True}, f)
-        except: pass
-
-    last_daily_report_date = None
-
+    
     # Loop utama monitoring
     while True:
         now_wib = datetime.now(bot.wib_tz)
         
-        # 2. Laporan Subuh 06:00 WIB
-        if now_wib.hour == 6 and now_wib.minute == 0:
-            if last_daily_report_date != now_wib.date():
-                df_m = bot.fetch_market_data(count=5)
-                p_m = float(df_m['Close'].iloc[-1]) if not df_m.empty else 0.0
-                send_telegram(f"🌅 *[LAPORAN SUBUH AI SNIPER]*\n🟢 Bot Siaga Senén-Jumaah\n💵 Harga: `{p_m:.2f}`")
-                last_daily_report_date = now_wib.date()
-
-        # 3. Eksekusi Sinyal Berkelanjutan
-        signal = bot.calculate_sniper_strategy()
-        if signal["valid"]:
-            curr_sig = signal["signal"]
+        # Analisis Pasar
+        market = bot.analyze_market_condition()
+        
+        if market["valid"]:
+            curr_sig = market["signal"]
             last_sig = bot.load_last_signal()
-            
             if curr_sig != last_sig:
                 is_rev = last_sig is not None
-                msg = format_sniper_card(signal, is_reversal=is_rev)
+                msg = format_sniper_card(market, is_reversal=is_rev)
                 send_telegram(msg)
                 bot.save_last_signal(curr_sig)
-                logging.info(f"✅ Sinyal {curr_sig} berhasil dikirim!")
-            else:
-                logging.info(f"⏳ Sinyal masih {curr_sig} (Aman, teu ngirim duplikat).")
-        else:
-            logging.info("⏳ Market XAUUSD di-skip (Teu acan nyumponan sarat rumus AI Sniper).")
+                logging.info(f"✅ Sinyal Eksekusi {curr_sig} dikirim!")
+        elif market["warning"]:
+            # Kirim aba-aba persiapan (bisa diatur supaya teu ngirim spam unggal menit ku simpen state samentawis)
+            logging.info(f"⚠️ Market nuju masihan aba-aba persiapan {market['signal']}")
+            send_telegram(format_warning_card(market))
+            # Jeda rada lila sakedik sangkan teu spam
+            time_module.sleep(120)
 
-        # Jeda 60 detik sateuacan mariksa deui pasar
         time_module.sleep(60)
