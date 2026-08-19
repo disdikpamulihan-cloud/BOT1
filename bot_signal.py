@@ -42,10 +42,10 @@ class SuperAIXAUUSDBot:
             return list(model_obj.values())[0]
         return model_obj
 
-    def fetch_deriv_candles(self, count: int = 100) -> pd.DataFrame:
-        """Menarik data candles XAUUSD real-time langsung dari Deriv WebSocket."""
-        symbols_to_try = ["frxXAUUSD", "XAUUSD", "gold"]
-        app_id = "1089"
+    def fetch_deriv_candles(self, count: int = 150) -> pd.DataFrame:
+        """Menarik data candles XAUUSD real-time langsong tina Deriv WebSocket (TF 5 Menit / 300s)."""
+        symbols_to_try = ["XAUUSD", "frxXAUUSD", "gold"]
+        app_id = "1089"  # App ID publik Deriv anu stabil
         ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
         
         for deriv_symbol in symbols_to_try:
@@ -56,7 +56,7 @@ class SuperAIXAUUSDBot:
                     "ticks_history": deriv_symbol,
                     "count": count,
                     "end": "latest",
-                    "granularity": 60, # TF 1 Menit
+                    "granularity": 300,  # 300 detik = TF 5 Menit
                     "style": "candles"
                 }
                 ws.send(json.dumps(req))
@@ -69,7 +69,8 @@ class SuperAIXAUUSDBot:
                     df['Close'] = df['Close'].astype(float)
                     df['High'] = df['High'].astype(float)
                     df['Low'] = df['Low'].astype(float)
-                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol}")
+                    df['Open'] = df['Open'].astype(float)
+                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol} (TF 5M)")
                     return df
             except Exception as e:
                 logging.warning(f"⚠️ Gagal dengan simbol {deriv_symbol}: {e}")
@@ -224,7 +225,7 @@ def format_signal_card(res: dict, is_reversal: bool = False) -> str:
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 *Aksi Squel/Close*: {alert_title}\n"
             f"💡 *Katerangan*: `{desc}`\n"
-            f"💵 *Harga WebSocket*: `{res['price']:.2f}`\n"
+            f"💵 *Harga WebSocket (TF 5M)*: `{res['price']:.2f}`\n"
             f"🔥 *Keyakinan AI*: `{res['confidence']:.1f}%`\n"
             "-------------------------------------\n"
             f"🛑 *Stop Loss Baru*: `{res['sl']:.2f}`\n"
@@ -269,7 +270,7 @@ def send_startup_notification(bot_instance):
         f"🚀 *[SYSTEM STARTUP]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "✅ *Super AI XAUUSD Bot* parantos sukses diaktifkeun!\n"
-        f"💵 *Harga Real-Time XAUUSD*: `{current_price:.2f}`\n"
+        f"💵 *Harga Real-Time XAUUSD (TF 5M)*: `{current_price:.2f}`\n"
         f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
         f"📊 *RSI*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
         "🛡️ Mode Anti-Spam Aktif: Notifikasi dikirim ngan sakali per sinyal.\n"
@@ -323,9 +324,6 @@ if __name__ == "__main__":
             current_signal = res["signal"]
             
             # 3. Logika Anti-Spam Sinyal:
-            # - Mun can kungsi ngirim sinyal, kirimkeun.
-            # - Mun sinyalna robah (lawan arah), kirim alert reversal.
-            # - Mun sinyalna masih sarua jeung sateuacanna, TEU KUDU KIRIM NOTIF ULANG (anteng di log wungkul).
             if bot.last_sent_signal is None:
                 msg = format_signal_card(res, is_reversal=False)
                 send_telegram_message(msg)
@@ -339,10 +337,9 @@ if __name__ == "__main__":
                 logging.info(f"🚨 Sinyal berbalik arah! Alert close & reverse dikirim: {current_signal}")
                 
             else:
-                # Sinyal sarua, amankeun tina spam (teu ngirim pesen ka telegram)
                 logging.info(f"⏳ Sinyal masih {current_signal} (Aman, teu ngirim notif ulang).")
         else:
             logging.info("⏳ Market XAUUSD di-skip (Teu acan nyumponan sarat keyakinan >75% / TP <100 pips).")
 
-        # Jeda 60 detik (1 menit) sateuacan mariksa deui pasar
+        # Jeda 60 detik sateuacan mariksa deui pasar
         time_module.sleep(60)
