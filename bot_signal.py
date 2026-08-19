@@ -137,16 +137,16 @@ class SniperXAUUSDBot:
             (close[-1] < open_p[-1])
         )
 
-        # Opsional: Integrasi AI Model upami model dimuat
+        # Integrasi Model AI Baru (Aman & Sinkron sareng format train_ai.py)
         if self.model_xauusd is not None:
             try:
-                # Conto fitur input AI (ATR, body_size, selisih harga kana MA200)
                 features = np.array([[atr, body_size, current_price - ma200]])
                 ai_pred = self.model_xauusd.predict(features)[0]
-                # Upami model AI nganggo klasifikasi (0/1), tiasa disesuaikeun di dieu
-                if ai_pred == 0: # Misalna 0 artina model teu nyarankeun / nyatakeun salah
+                if ai_pred == 0: # Upami model AI nyatakeun turun / teu layak
                     is_buy_signal = False
-                    is_sell_signal = False
+                elif ai_pred == 1 and not is_buy_signal and current_price > ma200:
+                    # AI nguatkeun sinyal buy upami tren ngarojong
+                    pass
             except Exception as e:
                 logging.warning(f"⚠️ Catetan prediksi AI: {e}")
 
