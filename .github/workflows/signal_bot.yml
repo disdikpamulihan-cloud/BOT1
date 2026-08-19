@@ -1,32 +1,40 @@
-name: Run XAUUSD AI Signal Bot
+name: Bot 1 Sniper (Auto-Train & Signal)
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *' # Jalan otomatis unggal 5 menit
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  run-bot1:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.9'
 
       - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Train/Update AI Model
-        run: python train_ai.py
+      - name: Auto Train AI Bot 1
+        run: |
+          python train_ai.py
 
-      - name: Execute Bot Signal Script
+      - name: Execute Bot 1 Signal Script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot_signal.py
+        run: |
+          python bot_signal.py
+
+      - name: Commit & Push Model/State Update
+        run: |
+          git config --global user.name "Bot1-Auto-Trainer"
+          git config --global user.email "bot1@github.com"
+          git add .
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update Bot 1 AI Model and State" && git push)
