@@ -5,7 +5,8 @@ import logging
 import os
 import requests
 import json
-import yfinance as yf
+import websocket
+import ssl
 from datetime import datetime, time
 import pytz
 import time as time_module
@@ -13,15 +14,16 @@ import time as time_module
 # Set up logging profesional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SuperAIXAUUSDBot:
+class SniperXAUUSDBot:
     """
-    SUPER AI TRADING BOT: Dedicated XAUUSD High-Precision Signal Generator
-    Dilengkapi Startup Notification, Anti-Spam State Memory, & Reversal Alert.
+    SNIPER XAUUSD BOT: Dedicated High-Precision Signal Generator via Deriv WebSocket.
+    Dilengkapi Startup Notification, Anti-State Memory, & Reversal Alert.
     """
     def __init__(self, model_path: str = "model_xauusd.pkl"):
         self.model_xauusd = self._safe_load(model_path)
         self.wib_tz = pytz.timezone('Asia/Jakarta')
-        self.last_sent_signal = None  # Pelacak sinyal sateuacanna supados henteu spam
+        self.state_file = "sniper_state.json"
+        self.startup_file = "sniper_startup.json"
 
     def _safe_load(self, path):
         if path and os.path.exists(path):
@@ -33,181 +35,133 @@ class SuperAIXAUUSDBot:
                 logging.warning(f"⚠️ Gagal memuat model dari {path}: {e}")
         return None
 
-    def _extract_model(self, model_obj):
-        if isinstance(model_obj, dict):
-            for key in ['model', 'estimator', 'lgbm', 'classifier', 'xgboost']:
-                if key in model_obj:
-                    return model_obj[key]
-            return list(model_obj.values())[0]
-        return model_obj
-
-    def fetch_deriv_candles(self, count: int = 150) -> pd.DataFrame:
-        """Menarik data candles XAUUSD real-time tina Yahoo Finance (Akurat & Tembus Firewall GitHub)."""
-        try:
-            # Tarik data XAUUSD tina Yahoo Finance (ticker: GC=F atanapi XAU-USD)
-            ticker = "GC=F" 
-            df = yf.download(ticker, period="5d", interval="5m", progress=False)
-            
-            if df.empty:
-                ticker = "XAU-USD"
-                df = yf.download(ticker, period="5d", interval="5m", progress=False)
-
-            if not df.empty:
-                # Ngaberesihkeun multi-index kolom ti yfinance upami aya
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.droplevel(1)
+    def fetch_market_data(self, count: int = 100) -> pd.DataFrame:
+        """Menarik data candles XAUUSD real-time tina WebSocket Deriv (Akurat & Presisi)."""
+        symbols = ["frxXAUUSD", "XAUUSD", "gold"]
+        app_id = "1089"
+        ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+        
+        for s in symbols:
+            ws = None
+            try:
+                ws = websocket.create_connection(ws_url, timeout=8, sslopt={"cert_reqs": ssl.CERT_NONE})
+                req = {
+                    "ticks_history": s,
+                    "count": count,
+                    "end": "latest",
+                    "granularity": 300, # TF 5 Menit
+                    "style": "candles"
+                }
+                ws.send(json.dumps(req))
+                res = json.loads(ws.recv())
+                ws.close()
                 
-                df = df.tail(count).copy()
-                df.reset_index(inplace=True)
-                
-                # Ngarobah ngaran kolom janten standar bot
-                rename_dict = {}
-                for col in df.columns:
-                    col_lower = str(col).lower()
-                    if 'close' in col_lower:
-                        rename_dict[col] = 'Close'
-                    elif 'open' in col_lower:
-                        rename_dict[col] = 'Open'
-                    elif 'high' in col_lower:
-                        rename_dict[col] = 'High'
-                    elif 'low' in col_lower:
-                        rename_dict[col] = 'Low'
-                
-                df.rename(columns=rename_dict, inplace=True)
-                
-                if {'Close', 'Open', 'High', 'Low'}.issubset(df.columns):
-                    df['Close'] = df['Close'].astype(float)
-                    df['High'] = df['High'].astype(float)
-                    df['Low'] = df['Low'].astype(float)
-                    df['Open'] = df['Open'].astype(float)
+                if "candles" in res and len(res["candles"]) > 0:
+                    df = pd.DataFrame(res["candles"])
+                    df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'}, inplace=True)
+                    for col in ['Close', 'Open', 'High', 'Low']:
+                        df[col] = df[col].astype(float)
                     
                     current_p = df['Close'].iloc[-1]
-                    logging.info(f"✅ Sukses tarik data XAUUSD via Yahoo Finance | Harga Terkini: {current_p:.2f}")
+                    logging.info(f"✅ Sukses tarik data XAUUSD via Deriv WS ({s}) | Harga Terkini: {current_p:.2f}")
                     return df
+            except Exception as e:
+                logging.warning(f"⚠️ Gagal narik data {s} via WS: {e}")
+            finally:
+                if ws:
+                    try: ws.close()
+                    except: pass
                     
-        except Exception as e:
-            logging.warning(f"⚠️ Gagal tarik data Yahoo Finance: {e}")
-            
-        logging.error("❌ Gagal total narik data pasar!")
+        logging.error("❌ Gagal total narik data pasar via WebSocket Deriv!")
         return pd.DataFrame()
 
-    def extract_features_and_indicators(self, df: pd.DataFrame):
-        if df.empty or len(df) < 30:
-            return None, 4375.97, 5.0, 50.0, 0.0
+    def load_last_signal(self) -> str:
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r") as f:
+                    return json.load(f).get("signal", None)
+            except: pass
+        return None
 
-        close = np.array(df['Close'].values, dtype=float).ravel()
-        high = np.array(df['High'].values, dtype=float).ravel()
-        low = np.array(df['Low'].values, dtype=float).ravel()
+    def save_last_signal(self, signal: str):
+        try:
+            with open(self.state_file, "w") as f:
+                json.dump({"signal": signal}, f)
+        except: pass
 
-        current_price = float(close[-1])
+    def calculate_sniper_strategy(self) -> dict:
+        df = self.fetch_market_data()
+        if df.empty or len(df) < 40:
+            return {"valid": False}
 
-        # 1. RSI (14)
-        delta = np.diff(close)
-        gain = np.mean(delta[delta > 0][-14:]) if len(delta[delta > 0]) > 0 else 0
-        loss = -np.mean(delta[delta < 0][-14:]) if len(delta[delta < 0]) > 0 else 1e-6
-        rsi = float(100 - (100 / (1 + gain/loss)))
+        close = df['Close'].values
+        high = df['High'].values
+        low = df['Low'].values
+        open_p = df['Open'].values
+        
+        current_price = close[-1]
 
-        # 2. ATR (Average True Range)
+        # A. Volatility & Range Filter (ATR 14)
         tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
         atr = float(np.mean(tr[-14:]) if len(tr) >= 14 else (high[-1] - low[-1]))
-
-        # 3. MACD Sederhana untuk konfirmasi momentum
-        ema12 = pd.Series(close).ewm(span=12, adjust=False).mean().iloc[-1]
-        ema26 = pd.Series(close).ewm(span=26, adjust=False).mean().iloc[-1]
-        macd = float(ema12 - ema26)
-
-        features = pd.DataFrame([{
-            'Column_0': (close[-1] - close[-2]) / close[-2],
-            'Column_1': (close[-1] - close[-5]) / close[-5],
-            'Column_2': rsi / 100.0,
-            'Column_3': atr / current_price,
-            'Column_4': np.std(close[-10:]) / current_price
-        }])
-
-        return features, current_price, atr, rsi, macd
-
-    def evaluate_market(self) -> dict:
-        """Kalkulasi sinyal XAUUSD presisi tinggi & validasi target minimal 100 pips (10 poin)."""
-        df = self.fetch_deriv_candles()
-        input_df, current_price, atr, rsi, macd = self.extract_features_and_indicators(df)
         
-        actual_model = self._extract_model(self.model_xauusd)
-        confidence = 55.0
-        prediction = 1
+        # B. Momentum Candle Body
+        body_size = abs(close[-1] - open_p[-1])
+        avg_body = np.mean(abs(close[-10:] - open_p[-10:]))
 
-        if actual_model is not None and input_df is not None:
-            try:
-                if isinstance(self.model_xauusd, dict) and 'scaler' in self.model_xauusd:
-                    input_data = self.model_xauusd['scaler'].transform(input_df.values)
-                else:
-                    input_data = input_df.values
-                
-                prediction = actual_model.predict(input_data)[0]
-                if hasattr(actual_model, "predict_proba"):
-                    probs = actual_model.predict_proba(input_data)[0]
-                    confidence = float(max(probs) * 100)
-            except Exception as e:
-                logging.warning(f"⚠️ Prediksi model error ({e}), menggunakan fallback indikator.")
-                prediction = 1 if rsi < 50 else 0
-                confidence = 60.0
-        else:
-            prediction = 1 if rsi < 50 else 0
-            confidence = 60.0
+        # C. Donchian / Breakout Channel (5 Candle Terakhir)
+        highest_high_5 = np.max(high[-6:-1])
+        lowest_low_5 = np.min(low[-6:-1])
 
-        signal = "BUY" if prediction == 1 else "SELL"
+        # D. RSI Calculation (14)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        current_rsi = float(rsi.iloc[-1])
 
-        # Dynamic Risk Management XAUUSD (Target minimal setara 100 pips / 10.0 poin)
-        sl_distance = max(atr * 1.2, 5.0)
-        tp1_distance = max(sl_distance * 1.5, 10.0)  # Minimal 10.0 poin (100 pips)
-        tp2_distance = tp1_distance * 2.0
+        # Syarat Eksekusi Sniper Pro
+        is_buy_signal = (
+            (current_price > highest_high_5) and 
+            (body_size > (avg_body * 1.2)) and 
+            (atr >= 1.5) and 
+            (current_rsi < 68) and
+            (close[-1] > open_p[-1])
+        )
 
-        if signal == "BUY":
-            sl = current_price - sl_distance
-            tp1 = current_price + tp1_distance
-            tp2 = current_price + tp2_distance
-        else:
-            sl = current_price + sl_distance
-            tp1 = current_price - tp1_distance
-            tp2 = current_price - tp2_distance
+        is_sell_signal = (
+            (current_price < lowest_low_5) and 
+            (body_size > (avg_body * 1.2)) and 
+            (atr >= 1.5) and 
+            (current_rsi > 32) and
+            (close[-1] < open_p[-1])
+        )
 
-        # FILTER KETAT: Keyakinan >= 75% & Target Minimal 100 Pips tercapai
-        min_target_pips = 10.0
-        is_high_probability = (confidence >= 75.0) and (tp1_distance >= min_target_pips)
-        is_momentum_strong = abs(macd) > (atr * 0.03)
+        if is_buy_signal:
+            return {
+                "valid": True, "signal": "BUY", "price": current_price,
+                "atr": atr, "rsi": current_rsi,
+                "sl": current_price - 35.0, "tp": current_price + 75.0
+            }
+        elif is_sell_signal:
+            return {
+                "valid": True, "signal": "SELL", "price": current_price,
+                "atr": atr, "rsi": current_rsi,
+                "sl": current_price + 35.0, "tp": current_price - 75.0
+            }
 
-        valid_signal = is_high_probability and is_momentum_strong
+        return {"valid": False}
 
-        return {
-            "valid": valid_signal,
-            "signal": signal,
-            "price": current_price,
-            "confidence": confidence,
-            "rsi": rsi,
-            "atr": atr,
-            "macd": macd,
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2
-        }
-
-def send_telegram_message(message: str):
-    """Mengirim notifikasi ke Telegram."""
-    bot_token = os.getenv("TELEGRAM_TOKEN")
+def send_telegram(message: str):
+    token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
-    if not bot_token or not chat_id:
+    if not token or not chat_id:
         logging.warning("TELEGRAM_TOKEN atau TELEGRAM_CHAT_ID tidak terdeteksi.")
         return
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        res = requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
         if res.status_code == 200:
             logging.info("Notifikasi Telegram berhasil terkirim.")
         else:
@@ -215,139 +169,70 @@ def send_telegram_message(message: str):
     except Exception as e:
         logging.error(f"Error Telegram API: {e}")
 
-def format_signal_card(res: dict, is_reversal: bool = False) -> str:
-    """Format tampilan pesan Telegram."""
+def format_sniper_card(res: dict, is_reversal: bool = False) -> str:
     wib_tz = pytz.timezone('Asia/Jakarta')
-    wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
+    wib = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
     
-    if is_reversal:
-        if res['signal'] == "BUY":
-            alert_title = "🚨🚨 **[ALERT: CLOSE SELL & REVERSE TO BUY!]** 🚨🚨"
-            desc = "Tren pasar ngadadak males! Tutup posisi SELL ayeuna, siap-siap pindah BUY!"
-        else:
-            alert_title = "🚨🚨 **[ALERT: CLOSE BUY & REVERSE TO SELL!]** 🚨🚨"
-            desc = "Tren pasar ngadadak turun! Tutup posisi BUY ayeuna, siap-siap pindah SELL!"
-        
-        return (
-            f"⚠️ *[SUPER AI XAUUSD - COUNTER SIGNAL]*\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 *Aksi Squel/Close*: {alert_title}\n"
-            f"💡 *Katerangan*: `{desc}`\n"
-            f"💵 *Harga Pasar (TF 5M)*: `{res['price']:.2f}`\n"
-            f"🔥 *Keyakinan AI*: `{res['confidence']:.1f}%`\n"
-            "-------------------------------------\n"
-            f"🛑 *Stop Loss Baru*: `{res['sl']:.2f}`\n"
-            f"🟢 *Target TP 1*: `{res['tp1']:.2f}`\n"
-            "-------------------------------------\n"
-            f"⏰ `{wib_time}`"
-        )
-    else:
-        if res['signal'] == "BUY":
-            signal_badge = "🟢🟢 **[STRONG BUY - LONG]** 🟢🟢"
-            action_desc = "Target XAUUSD siap MEROKET naik (Target >100 Pips)! 🚀"
-        else:
-            signal_badge = "🔴🔴 **[STRONG SELL - SHORT]** 🔴🔴"
-            action_desc = "Target XAUUSD siap TERJUN bebas (Target >100 Pips)! 📉"
+    badge = "🟢🟢 **[SNIPER PRO: LAWAN ARAH / REVERSAL BUY]** 🟢🟢" if res['signal'] == "BUY" and is_reversal else \
+            ("🔴🔴 **[SNIPER PRO: LAWAN ARAH / REVERSAL SELL]** 🔴🔴" if res['signal'] == "SELL" and is_reversal else \
+            ("🟢🟢 **[SNIPER PRO EXCLUSIVE: STRONG BUY]** 🟢🟢" if res['signal'] == "BUY" else "🔴🔴 **[SNIPER PRO EXCLUSIVE: STRONG SELL]** 🔴🔴"))
 
-        return (
-            f"🤖 *[SUPER AI XAUUSD BOT - SIGNAL]*\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 *Sinyal Eksekusi*: {signal_badge}\n"
-            f"💡 *Analisis*: `{action_desc}`\n"
-            f"💵 *Harga Pasar (TF 5M)*: `{res['price']:.2f}`\n"
-            f"🔍 *(Cocokkeun jeung Harga Bid/Ask MT5)*\n"
-            f"🔥 *Keyakinan AI (High Conf)*: `{res['confidence']:.1f}%`\n"
-            f"📊 *RSI*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
-            "-------------------------------------\n"
-            f"🛑 *Stop Loss (Anti-SL)*: `{res['sl']:.2f}`\n"
-            f"🟢 *Target TP 1 (Aman)*: `{res['tp1']:.2f}`\n"
-            f"🚀 *Target TP 2 (Runner)*: `{res['tp2']:.2f}`\n"
-            "-------------------------------------\n"
-            f"⏰ `{wib_time}`"
-        )
-
-def send_startup_notification(bot_instance):
-    """Mengirim notifikasi startup lengkap dengan harga real-time terkini."""
-    df = bot_instance.fetch_deriv_candles(count=5)
-    _, current_price, atr, rsi, _ = bot_instance.extract_features_and_indicators(df)
-    
-    wib_tz = pytz.timezone('Asia/Jakarta')
-    wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
-    
-    msg = (
-        f"🚀 *[SYSTEM STARTUP]*\n"
+    return (
+        f"🔥 *[XAUUSD SNIPER SYSTEM - KARYA UTAMA]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ *Super AI XAUUSD Bot* parantos sukses diaktifkeun!\n"
-        f"💵 *Harga Real-Time XAUUSD (TF 5M)*: `{current_price:.2f}`\n"
-        f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
-        f"📊 *RSI*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
-        "🛡️ Mode Anti-Spam Aktif: Notifikasi dikirim ngan sakali per sinyal.\n"
-        f"⏰ `{wib_time}`"
-    )
-    send_telegram_message(msg)
-
-def send_daily_report(bot_instance):
-    """Mengirim laporan rutin jam 06.00 WIB beserta harga terkini."""
-    df = bot_instance.fetch_deriv_candles(count=5)
-    _, current_price, atr, rsi, _ = bot_instance.extract_features_and_indicators(df)
-    
-    wib_tz = pytz.timezone('Asia/Jakarta')
-    wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
-    
-    msg = (
-        f"🌅 *[LAPORAN RUTIN SUBUH - 06:00 WIB]*\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🟢 *Bot Status*: `AKTIF & SIAGA`\n"
-        f"💵 *Harga Terkini XAUUSD (TF 5M)*: `{current_price:.2f}`\n"
-        f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
-        f"📊 *RSI Saat Ini*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
+        f"🎯 *EKSEKUSI*: {badge}\n"
+        f"💵 *Harga Masuk*: `{res['price']:.2f}`\n"
+        f"📊 *ATR / RSI*: `{res['atr']:.2f} / RSI: {res['rsi']:.1f}`\n"
         "-------------------------------------\n"
-        "☕ Siap-siap ngantosan sinyal high-conviction dinten ieu!\n"
-        f"⏰ `{wib_time}`"
+        f"🛑 *Stop Loss*: `{res['sl']:.2f}`\n"
+        f"🎯 *Take Profit*: `{res['tp']:.2f}`\n"
+        "-------------------------------------\n"
+        f"⏰ *WAKTU*: `{wib}`"
     )
-    send_telegram_message(msg)
 
 if __name__ == "__main__":
-    bot = SuperAIXAUUSDBot(model_path='model_xauusd.pkl')
-    
-    # 1. Kirim notif startup
-    send_startup_notification(bot)
-    
+    bot = SniperXAUUSDBot(model_path='model_xauusd.pkl')
+    now_wib = datetime.now(bot.wib_tz)
+
+    # 1. Startup Notification (Sakali)
+    if not os.path.exists(bot.startup_file):
+        df_s = bot.fetch_market_data(count=5)
+        p_s = float(df_s['Close'].iloc[-1]) if not df_s.empty else 0.0
+        send_telegram(f"🚀 *[SNIPER BOT AKTIF]*\n✅ Sistem Eksklusif Siap Tempur!\n💵 Harga XAUUSD: `{p_s:.2f}`\n⏰ `{now_wib.strftime('%H:%M:%S WIB')}`")
+        try:
+            with open(bot.startup_file, "w") as f: json.dump({"ok": True}, f)
+        except: pass
+
     last_daily_report_date = None
 
     # Loop utama monitoring
     while True:
         now_wib = datetime.now(bot.wib_tz)
         
-        # 2. Laporan rutin jam 06.00 WIB
+        # 2. Laporan Subuh 06:00 WIB
         if now_wib.hour == 6 and now_wib.minute == 0:
             if last_daily_report_date != now_wib.date():
-                send_daily_report(bot)
+                df_m = bot.fetch_market_data(count=5)
+                p_m = float(df_m['Close'].iloc[-1]) if not df_m.empty else 0.0
+                send_telegram(f"🌅 *[LAPORAN SUBUH SNIPER]*\n🟢 Bot Siaga Senén-Jumaah\n💵 Harga: `{p_m:.2f}`")
                 last_daily_report_date = now_wib.date()
 
-        # Evaluasi pasar berkala
-        res = bot.evaluate_market()
-        
-        if res["valid"]:
-            current_signal = res["signal"]
+        # 3. Eksekusi Sinyal Berkelanjutan
+        signal = bot.calculate_sniper_strategy()
+        if signal["valid"]:
+            curr_sig = signal["signal"]
+            last_sig = bot.load_last_signal()
             
-            # 3. Logika Anti-Spam Sinyal
-            if bot.last_sent_signal is None:
-                msg = format_signal_card(res, is_reversal=False)
-                send_telegram_message(msg)
-                bot.last_sent_signal = current_signal
-                logging.info(f"✅ Sinyal awal {current_signal} terkirim!")
-                
-            elif bot.last_sent_signal != current_signal:
-                msg = format_signal_card(res, is_reversal=True)
-                send_telegram_message(msg)
-                bot.last_sent_signal = current_signal
-                logging.info(f"🚨 Sinyal berbalik arah! Alert close & reverse dikirim: {current_signal}")
-                
+            if curr_sig != last_sig:
+                is_rev = last_sig is not None
+                msg = format_sniper_card(signal, is_reversal=is_rev)
+                send_telegram(msg)
+                bot.save_last_signal(curr_sig)
+                logging.info(f"✅ Sinyal {curr_sig} berhasil dikirim!")
             else:
-                logging.info(f"⏳ Sinyal masih {current_signal} (Aman, teu ngirim notif ulang).")
+                logging.info(f"⏳ Sinyal masih {curr_sig} (Aman, teu ngirim duplikat).")
         else:
-            logging.info("⏳ Market XAUUSD di-skip (Teu acan nyumponan sarat keyakinan >75% / TP <100 pips).")
+            logging.info("⏳ Market XAUUSD di-skip (Teu acan nyumponan sarat rumus Sniper).")
 
         # Jeda 60 detik sateuacan mariksa deui pasar
         time_module.sleep(60)
