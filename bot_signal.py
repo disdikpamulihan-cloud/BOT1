@@ -5,8 +5,7 @@ import logging
 import os
 import requests
 import json
-import websocket
-import ssl
+import yfinance as yf
 from datetime import datetime, time
 import pytz
 import time as time_module
@@ -43,50 +42,53 @@ class SuperAIXAUUSDBot:
         return model_obj
 
     def fetch_deriv_candles(self, count: int = 150) -> pd.DataFrame:
-        """Menarik data candles XAUUSD real-time langsong tina Deriv WebSocket (TF 5 Menit / 300s)."""
-        symbols_to_try = ["XAUUSD", "frxXAUUSD", "gold"]
-        app_id = "1089"  # App ID publik Deriv anu stabil
-        ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
-        
-        for deriv_symbol in symbols_to_try:
-            ws = None
-            try:
-                ws = websocket.create_connection(ws_url, timeout=10, sslopt={"cert_reqs": ssl.CERT_NONE})
-                req = {
-                    "ticks_history": deriv_symbol,
-                    "count": count,
-                    "end": "latest",
-                    "granularity": 300,  # 300 detik = TF 5 Menit
-                    "style": "candles"
-                }
-                ws.send(json.dumps(req))
-                res = json.loads(ws.recv())
-                ws.close()
+        """Menarik data candles XAUUSD real-time tina Yahoo Finance (Akurat & Tembus Firewall GitHub)."""
+        try:
+            # Tarik data XAUUSD tina Yahoo Finance (ticker: GC=F atanapi XAU-USD)
+            ticker = "GC=F" 
+            df = yf.download(ticker, period="5d", interval="5m", progress=False)
+            
+            if df.empty:
+                ticker = "XAU-USD"
+                df = yf.download(ticker, period="5d", interval="5m", progress=False)
+
+            if not df.empty:
+                # Ngaberesihkeun multi-index kolom ti yfinance upami aya
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
                 
-                # Cek naha aya error ti server Deriv
-                if "error" in res:
-                    logging.warning(f"⚠️ Deriv API Error untuk {deriv_symbol}: {res['error'].get('message')}")
-                    continue
+                df = df.tail(count).copy()
+                df.reset_index(inplace=True)
                 
-                if "candles" in res and len(res["candles"]) > 0:
-                    df = pd.DataFrame(res["candles"])
-                    df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'}, inplace=True)
+                # Ngarobah ngaran kolom janten standar bot
+                rename_dict = {}
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'close' in col_lower:
+                        rename_dict[col] = 'Close'
+                    elif 'open' in col_lower:
+                        rename_dict[col] = 'Open'
+                    elif 'high' in col_lower:
+                        rename_dict[col] = 'High'
+                    elif 'low' in col_lower:
+                        rename_dict[col] = 'Low'
+                
+                df.rename(columns=rename_dict, inplace=True)
+                
+                if {'Close', 'Open', 'High', 'Low'}.issubset(df.columns):
                     df['Close'] = df['Close'].astype(float)
                     df['High'] = df['High'].astype(float)
                     df['Low'] = df['Low'].astype(float)
                     df['Open'] = df['Open'].astype(float)
-                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol} (TF 5M) | Harga Terkini: {df['Close'].iloc[-1]}")
+                    
+                    current_p = df['Close'].iloc[-1]
+                    logging.info(f"✅ Sukses tarik data XAUUSD via Yahoo Finance | Harga Terkini: {current_p:.2f}")
                     return df
-            except Exception as e:
-                logging.warning(f"⚠️ Gagal koneksi WebSocket dengan simbol {deriv_symbol}: {e}")
-            finally:
-                if ws:
-                    try:
-                        ws.close()
-                    except:
-                        pass
-                        
-        logging.error("❌ KABEH SIMBOL GAGAL! WebSocket Deriv tidak merespons data candles.")
+                    
+        except Exception as e:
+            logging.warning(f"⚠️ Gagal tarik data Yahoo Finance: {e}")
+            
+        logging.error("❌ Gagal total narik data pasar!")
         return pd.DataFrame()
 
     def extract_features_and_indicators(self, df: pd.DataFrame):
@@ -231,7 +233,7 @@ def format_signal_card(res: dict, is_reversal: bool = False) -> str:
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 *Aksi Squel/Close*: {alert_title}\n"
             f"💡 *Katerangan*: `{desc}`\n"
-            f"💵 *Harga WebSocket (TF 5M)*: `{res['price']:.2f}`\n"
+            f"💵 *Harga Pasar (TF 5M)*: `{res['price']:.2f}`\n"
             f"🔥 *Keyakinan AI*: `{res['confidence']:.1f}%`\n"
             "-------------------------------------\n"
             f"🛑 *Stop Loss Baru*: `{res['sl']:.2f}`\n"
@@ -252,7 +254,7 @@ def format_signal_card(res: dict, is_reversal: bool = False) -> str:
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 *Sinyal Eksekusi*: {signal_badge}\n"
             f"💡 *Analisis*: `{action_desc}`\n"
-            f"💵 *Harga WebSocket (TF 5M)*: `{res['price']:.2f}`\n"
+            f"💵 *Harga Pasar (TF 5M)*: `{res['price']:.2f}`\n"
             f"🔍 *(Cocokkeun jeung Harga Bid/Ask MT5)*\n"
             f"🔥 *Keyakinan AI (High Conf)*: `{res['confidence']:.1f}%`\n"
             f"📊 *RSI*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
