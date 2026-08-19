@@ -51,7 +51,7 @@ class SuperAIXAUUSDBot:
         for deriv_symbol in symbols_to_try:
             ws = None
             try:
-                ws = websocket.create_connection(ws_url, timeout=8, sslopt={"cert_reqs": ssl.CERT_NONE})
+                ws = websocket.create_connection(ws_url, timeout=10, sslopt={"cert_reqs": ssl.CERT_NONE})
                 req = {
                     "ticks_history": deriv_symbol,
                     "count": count,
@@ -63,6 +63,11 @@ class SuperAIXAUUSDBot:
                 res = json.loads(ws.recv())
                 ws.close()
                 
+                # Cek naha aya error ti server Deriv
+                if "error" in res:
+                    logging.warning(f"⚠️ Deriv API Error untuk {deriv_symbol}: {res['error'].get('message')}")
+                    continue
+                
                 if "candles" in res and len(res["candles"]) > 0:
                     df = pd.DataFrame(res["candles"])
                     df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'}, inplace=True)
@@ -70,10 +75,10 @@ class SuperAIXAUUSDBot:
                     df['High'] = df['High'].astype(float)
                     df['Low'] = df['Low'].astype(float)
                     df['Open'] = df['Open'].astype(float)
-                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol} (TF 5M)")
+                    logging.info(f"✅ Sukses tarik data XAUUSD via simbol: {deriv_symbol} (TF 5M) | Harga Terkini: {df['Close'].iloc[-1]}")
                     return df
             except Exception as e:
-                logging.warning(f"⚠️ Gagal dengan simbol {deriv_symbol}: {e}")
+                logging.warning(f"⚠️ Gagal koneksi WebSocket dengan simbol {deriv_symbol}: {e}")
             finally:
                 if ws:
                     try:
@@ -81,6 +86,7 @@ class SuperAIXAUUSDBot:
                     except:
                         pass
                         
+        logging.error("❌ KABEH SIMBOL GAGAL! WebSocket Deriv tidak merespons data candles.")
         return pd.DataFrame()
 
     def extract_features_and_indicators(self, df: pd.DataFrame):
@@ -208,7 +214,7 @@ def send_telegram_message(message: str):
         logging.error(f"Error Telegram API: {e}")
 
 def format_signal_card(res: dict, is_reversal: bool = False) -> str:
-    """Format tampilan pesan Telegram. Bisa jadi Sinyal Biasa atawa Alert Close/Lawan Arah."""
+    """Format tampilan pesan Telegram."""
     wib_tz = pytz.timezone('Asia/Jakarta')
     wib_time = datetime.now(wib_tz).strftime('%Y-%m-%d %H:%M:%S WIB')
     
@@ -246,7 +252,7 @@ def format_signal_card(res: dict, is_reversal: bool = False) -> str:
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 *Sinyal Eksekusi*: {signal_badge}\n"
             f"💡 *Analisis*: `{action_desc}`\n"
-            f"💵 *Harga WebSocket (Feed Bot)*: `{res['price']:.2f}`\n"
+            f"💵 *Harga WebSocket (TF 5M)*: `{res['price']:.2f}`\n"
             f"🔍 *(Cocokkeun jeung Harga Bid/Ask MT5)*\n"
             f"🔥 *Keyakinan AI (High Conf)*: `{res['confidence']:.1f}%`\n"
             f"📊 *RSI*: `{res['rsi']:.1f}` | *ATR*: `{res['atr']:.2f}`\n"
@@ -290,7 +296,7 @@ def send_daily_report(bot_instance):
         f"🌅 *[LAPORAN RUTIN SUBUH - 06:00 WIB]*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "🟢 *Bot Status*: `AKTIF & SIAGA`\n"
-        f"💵 *Harga Terkini XAUUSD (Feed)*: `{current_price:.2f}`\n"
+        f"💵 *Harga Terkini XAUUSD (TF 5M)*: `{current_price:.2f}`\n"
         f"🔍 *(Bandingkeun sareng MT5 ayeuna)*\n"
         f"📊 *RSI Saat Ini*: `{rsi:.1f}` | *ATR*: `{atr:.2f}`\n"
         "-------------------------------------\n"
@@ -302,7 +308,7 @@ def send_daily_report(bot_instance):
 if __name__ == "__main__":
     bot = SuperAIXAUUSDBot(model_path='model_xauusd.pkl')
     
-    # 1. Kirim notif startup (Mung sakali pas bot mimiti hirup)
+    # 1. Kirim notif startup
     send_startup_notification(bot)
     
     last_daily_report_date = None
@@ -311,7 +317,7 @@ if __name__ == "__main__":
     while True:
         now_wib = datetime.now(bot.wib_tz)
         
-        # 2. Laporan rutin jam 06.00 WIB (Mung sakali sadinten)
+        # 2. Laporan rutin jam 06.00 WIB
         if now_wib.hour == 6 and now_wib.minute == 0:
             if last_daily_report_date != now_wib.date():
                 send_daily_report(bot)
@@ -323,7 +329,7 @@ if __name__ == "__main__":
         if res["valid"]:
             current_signal = res["signal"]
             
-            # 3. Logika Anti-Spam Sinyal:
+            # 3. Logika Anti-Spam Sinyal
             if bot.last_sent_signal is None:
                 msg = format_signal_card(res, is_reversal=False)
                 send_telegram_message(msg)
