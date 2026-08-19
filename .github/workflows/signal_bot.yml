@@ -1,9 +1,9 @@
 name: Run XAUUSD AI Signal Bot
 
 on:
-  # Berjalan otomatis setiap 10 menit
-  - cron: '*/10 * * * *'
-  workflow_dispatch: # Mengaktifkan tombol 'Run workflow' manual
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
