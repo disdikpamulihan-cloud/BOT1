@@ -9,8 +9,8 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def fetch_historical_data_for_training(count: int = 2500) -> pd.DataFrame:
-    """Narik data history langkung seueur (2500 candle) supados AI diajar tina sagala kondisi market emas."""
+def fetch_historical_data_for_training(count: int = 3000) -> pd.DataFrame:
+    """Narik data historis maksimal (3000 candle) pikeun ngajamin AI boga database pola harga anu selengkap-lengkapnya."""
     symbols = ["frxXAUUSD", "XAUUSD", "gold"]
     app_id = "1089"
     ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
@@ -34,7 +34,7 @@ def fetch_historical_data_for_training(count: int = 2500) -> pd.DataFrame:
                 df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'}, inplace=True)
                 for col in ['Close', 'Open', 'High', 'Low']:
                     df[col] = df[col].astype(float)
-                logging.info(f"✅ Berhasil tarik {len(df)} data history tina {s} pikeun latihan AI tingkat luhur.")
+                logging.info(f"✅ Berhasil tarik {len(df)} data history tina {s} pikeun latihan AI.")
                 return df
         except Exception as e:
             logging.warning(f"⚠️ Gagal narik data tina {s}: {e}")
@@ -49,8 +49,8 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def train_new_ai_model():
-    logging.info("🔄 Mimiti narik data pasar pikeun latihan AI Sniper Jitu...")
-    df = fetch_historical_data_for_training(count=2500)
+    logging.info("🔄 Mimiti narik data pasar pikeun latihan AI High-Performance...")
+    df = fetch_historical_data_for_training(count=3000)
     
     if df.empty or len(df) < 300:
         logging.error("❌ Data teu cukup pikeun melatih model AI!")
@@ -61,7 +61,7 @@ def train_new_ai_model():
     low = df['Low']
     open_p = df['Open']
 
-    # Indikator Komplit: MA-200, MA-50, ATR, RSI
+    # Indikator Komplit Kelas Institusi
     ma200 = close.rolling(window=200).mean()
     ma50 = close.rolling(window=50).mean()
     tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
@@ -80,11 +80,10 @@ def train_new_ai_model():
     X = []
     y = []
 
-    # Filter Ekstrim Ketat: AI ngan diajar tina pergerakan anu bener-bener akurat (Anti-SL)
+    # Filter Emas Paling Ketat: Mangkas sakabéh noise pasar leutik
     for i in range(200, len(df_feat) - 3):
         row = df_feat.iloc[i]
         
-        # Fitur multi-dimensi supaya AI terang struktur pasar
         features = [
             float(row['ATR']), 
             float(row['BodySize']), 
@@ -93,30 +92,28 @@ def train_new_ai_model():
             float(row['RSI'])
         ]
         
-        # Tingali pergerakan 3 candle ka hareup (supaya tangtu moal gampang kena SL sakedapan)
         future_prices = df_feat['Close'].iloc[i+1 : i+4]
         max_future = future_prices.max()
         min_future = future_prices.min()
         current_c = row['Close']
 
-        # Label ketat: 1 (BUY) lamun naék luhur tanpa nyolok ka handapheula, 0 (SELL) lamun sabalikna
-        if (max_future - current_c) > (row['ATR'] * 1.5) and (current_c - min_future) < (row['ATR'] * 0.8):
+        # Kriteria mutlak profit bersih tanpa goyang
+        if (max_future - current_c) > (row['ATR'] * 1.2) and (current_c - min_future) < (row['ATR'] * 0.5):
             X.append(features)
             y.append(1)
-        elif (current_c - min_future) > (row['ATR'] * 1.5) and (max_future - current_c) < (row['ATR'] * 0.8):
+        elif (current_c - min_future) > (row['ATR'] * 1.2) and (max_future - current_c) < (row['ATR'] * 0.5):
             X.append(features)
             y.append(0)
 
-    if len(X) < 50:
-        logging.error("❌ Data sampel teuing saeutik akibat filter teuing ketat! Nyobaan melonggarkeun sakedik...")
-        # Fallback leuwih longgar sakedik lamun data kirang
+    if len(X) < 40:
+        logging.warning("⚠️ Sampel data teuing ketat, melonggarkeun sakedik watesan...")
         for i in range(200, len(df_feat) - 1):
             row = df_feat.iloc[i]
             features = [float(row['ATR']), float(row['BodySize']), float(row['Close'] - row['MA200']), float(row['Close'] - row['MA50']), float(row['RSI'])]
             future_ret = df_feat['Close'].iloc[i+1] - row['Close']
-            if future_ret > 0.3:
+            if future_ret > 0.2:
                 X.append(features); y.append(1)
-            elif future_ret < -0.3:
+            elif future_ret < -0.2:
                 X.append(features); y.append(0)
 
     X = np.array(X)
@@ -125,26 +122,26 @@ def train_new_ai_model():
     from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
     from sklearn.model_selection import train_test_split
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
 
-    # Kombinasi AI Tingkat Tinggi (Ensemble Model)
-    model1 = RandomForestClassifier(n_estimators=200, max_depth=7, random_state=42)
-    model2 = GradientBoostingClassifier(n_estimators=150, learning_rate=0.03, random_state=42)
+    # Tuning parameter tingkat luhur (nambahan estimator & jerona pohon kaputusan)
+    model1 = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42)
+    model2 = GradientBoostingClassifier(n_estimators=200, learning_rate=0.02, max_depth=5, random_state=42)
 
     ensemble_model = VotingClassifier(
         estimators=[('rf', model1), ('gb', model2)],
-        voting='soft' # Soft voting ngamungkinkeun AI milih dumasar probabilitas persentase kepastian
+        voting='soft'
     )
 
-    logging.info("🧠 Sedang melatih Ensemble AI High-Precision...")
+    logging.info("🧠 Njalankeun latihan optimasi mutlak AI...")
     ensemble_model.fit(X_train, y_train)
 
     score = ensemble_model.score(X_test, y_test)
-    logging.info(f"✨ Model AI Sniper Jitu suksés dilatih! Akurasi test: {score * 100:.2f}%")
+    logging.info(f"✨ Model AI Optimasi suksés dilatih! Akurasi test: {score * 100:.2f}%")
 
     model_filename = "model_xauusd.pkl"
     joblib.dump(ensemble_model, model_filename)
-    logging.info(f"💾 Model AI Jitu suksés disimpen kana {model_filename}!")
+    logging.info(f"💾 Model AI Ultimate suksés disimpen kana {model_filename}!")
     return True
 
 if __name__ == "__main__":
