@@ -93,6 +93,13 @@ class SniperXAUUSDBot:
                 json.dump({"signal": signal}, f)
         except: pass
 
+    def calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
     def calculate_sniper_strategy(self) -> dict:
         df = self.fetch_market_data(count=250)
         if df.empty or len(df) < 205:
@@ -101,32 +108,34 @@ class SniperXAUUSDBot:
         # 1. Anti-Repainting: Ngan ukur ngolah candle anu geus tutup
         df_closed = df.iloc[:-1] 
         
-        close = df_closed['Close'].values
-        high = df_closed['High'].values
-        low = df_closed['Low'].values
-        open_p = df_closed['Open'].values
+        close = df_closed['Close']
+        high = df_closed['High']
+        low = df_closed['Low']
+        open_p = df_closed['Open']
         current_price = df['Close'].iloc[-1]
 
-        # 2. Filter Trend MA-200
-        ma200 = pd.Series(close).rolling(window=200).mean().iloc[-1]
-
-        # 3. Volatility & ATR (14)
-        tr = np.maximum(high[1:] - low[1:], np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])))
-        atr = float(np.mean(tr[-14:]) if len(tr) >= 14 else (high[-1] - low[-1]))
+        # 2. Indikator Pendukung (MA-200, MA-50, ATR, RSI)
+        ma200 = close.rolling(window=200).mean().iloc[-1]
+        ma50 = close.rolling(window=50).mean().iloc[-1]
         
-        # 4. Momentum & Donchian Channel
-        body_size = abs(close[-1] - open_p[-1])
-        avg_body = np.mean(abs(close[-10:] - open_p[-10:]))
-        highest_high_5 = np.max(high[-6:-1])
-        lowest_low_5 = np.min(low[-6:-1])
+        tr = np.maximum(high.values[1:] - low.values[1:], np.maximum(abs(high.values[1:] - close.values[:-1]), abs(low.values[1:] - close.values[:-1])))
+        atr = float(np.mean(tr[-14:]) if len(tr) >= 14 else (high.iloc[-1] - low.iloc[-1]))
+        
+        rsi_series = self.calculate_rsi(close, 14)
+        rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
-        # Syarat Eksekusi Sniper + Filter Trend MA-200
+        body_size = abs(close.iloc[-1] - open_p.iloc[-1])
+        avg_body = np.mean(abs(close.iloc[-10:] - open_p.iloc[-10:]))
+        highest_high_5 = np.max(high.values[-6:-1])
+        lowest_low_5 = np.min(low.values[-6:-1])
+
+        # Syarat Eksekusi Sniper Dasar
         is_buy_signal = (
             (current_price > ma200) and
             (current_price > highest_high_5) and 
             (body_size > (avg_body * 1.2)) and 
             (atr >= 0.5) and 
-            (close[-1] > open_p[-1])
+            (close.iloc[-1] > open_p.iloc[-1])
         )
 
         is_sell_signal = (
@@ -134,19 +143,27 @@ class SniperXAUUSDBot:
             (current_price < lowest_low_5) and 
             (body_size > (avg_body * 1.2)) and 
             (atr >= 0.5) and 
-            (close[-1] < open_p[-1])
+            (close.iloc[-1] < open_p.iloc[-1])
         )
 
-        # Integrasi Model AI Baru (Aman & Sinkron sareng format train_ai.py)
+        # Integrasi Model AI (Kirim 5 Fitur pas akurat sareng train_ai.py)
         if self.model_xauusd is not None:
             try:
-                features = np.array([[atr, body_size, current_price - ma200]])
+                # 5 Fitur: [ATR, BodySize, Jarak MA200, Jarak MA50, RSI]
+                features = np.array([[
+                    float(atr), 
+                    float(body_size), 
+                    float(current_price - ma200), 
+                    float(current_price - ma50),
+                    float(rsi)
+                ]])
+                
                 ai_pred = self.model_xauusd.predict(features)[0]
-                if ai_pred == 0: # Upami model AI nyatakeun turun / teu layak
+                
+                if ai_pred == 0: # Upami AI nyatakeun turun/tidak layak BUY
                     is_buy_signal = False
-                elif ai_pred == 1 and not is_buy_signal and current_price > ma200:
-                    # AI nguatkeun sinyal buy upami tren ngarojong
-                    pass
+                elif ai_pred == 1: # Upami AI nyatakeun naik/tidak layak SELL
+                    is_sell_signal = False
             except Exception as e:
                 logging.warning(f"⚠️ Catetan prediksi AI: {e}")
 
