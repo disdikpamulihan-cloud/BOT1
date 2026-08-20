@@ -7,7 +7,7 @@ import requests
 import json
 import websocket
 import ssl
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 import time as time_module
 
@@ -19,8 +19,7 @@ class SniperXAUUSDBot:
         self.model_xauusd = self._safe_load(model_path)
         self.wib_tz = pytz.timezone('Asia/Jakarta')
         self.state_file = "sniper_state.json"
-        self.startup_file = "sniper_startup.json"
-        self.warning_state_file = "sniper_warning_state.json"
+        self.warning_state_file = "sniper_warning_state.json" # Ditambahkeun jang anti-spam warning
 
     def _safe_load(self, path):
         if path and os.path.exists(path):
@@ -59,7 +58,7 @@ class SniperXAUUSDBot:
                         for col in ['Close', 'Open', 'High', 'Low']:
                             df[col] = df[col].astype(float)
                         return df
-                except Exception as e:
+                except Exception:
                     time_module.sleep(2)
                 finally:
                     if ws:
@@ -69,17 +68,17 @@ class SniperXAUUSDBot:
                 time_module.sleep(3)
         return pd.DataFrame()
 
-    def load_last_signal(self) -> str:
-        if os.path.exists(self.state_file):
+    def load_state(self, filename) -> str:
+        if os.path.exists(filename):
             try:
-                with open(self.state_file, "r") as f:
+                with open(filename, "r") as f:
                     return json.load(f).get("signal", None)
             except: pass
         return None
 
-    def save_last_signal(self, signal: str):
+    def save_state(self, filename, signal: str):
         try:
-            with open(self.state_file, "w") as f:
+            with open(filename, "w") as f:
                 json.dump({"signal": signal}, f)
         except: pass
 
@@ -91,7 +90,6 @@ class SniperXAUUSDBot:
         return 100 - (100 / (1 + rs))
 
     def analyze_market_condition(self) -> dict:
-        """Fungsi pikeun nganalisis pasar sarta ngadeteksi potensi sinyal sateuacanna (Persiapan OP)."""
         df = self.fetch_market_data(count=250)
         if df.empty or len(df) < 205:
             return {"valid": False, "warning": False}
@@ -120,7 +118,6 @@ class SniperXAUUSDBot:
         is_buy = (current_price > ma200) and (current_price > highest_high_5) and (atr >= 0.5)
         is_sell = (current_price < ma200) and (current_price < lowest_low_5) and (atr >= 0.5)
 
-        # Cek Prediksi AI lamun aya
         ai_approval = True
         if self.model_xauusd is not None:
             try:
@@ -130,7 +127,6 @@ class SniperXAUUSDBot:
                 if is_sell and ai_pred == 1: ai_approval = False
             except: pass
 
-        # Validasi Sinyal Matang (Full OP)
         is_buy_signal = is_buy and ai_approval and (body_size > (avg_body * 1.2)) and (close.iloc[-1] > open_p.iloc[-1])
         is_sell_signal = is_sell and ai_approval and (body_size > (avg_body * 1.2)) and (close.iloc[-1] < open_p.iloc[-1])
 
@@ -139,7 +135,6 @@ class SniperXAUUSDBot:
         elif is_sell_signal:
             return {"valid": True, "warning": False, "signal": "SELL", "price": current_price, "atr": atr, "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)}
 
-        # Deteksi Persiapan (Warning 5 Menit sateuacan matang)
         is_warning_buy = is_buy and ai_approval and (close.iloc[-1] > open_p.iloc[-1])
         is_warning_sell = is_sell and ai_approval and (close.iloc[-1] < open_p.iloc[-1])
 
@@ -172,7 +167,7 @@ def format_warning_card(res: dict) -> str:
         f"⏰ *WAKTU*: `{wib}`"
     )
 
-def format_sniper_card(res: dict, is_reversal: bool = False) -> str:
+def format_sniper_card(res: dict) -> str:
     wib = datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M:%S WIB')
     badge = "🟢🟢 **[AI SNIPER: STRONG BUY]** 🟢🟢" if res['signal'] == "BUY" else "🔴🔴 **[AI SNIPER: STRONG SELL]** 🔴🔴"
     return (
@@ -189,27 +184,29 @@ def format_sniper_card(res: dict, is_reversal: bool = False) -> str:
 if __name__ == "__main__":
     bot = SniperXAUUSDBot(model_path='model_xauusd.pkl')
     
-    # Loop utama monitoring
     while True:
-        now_wib = datetime.now(bot.wib_tz)
-        
-        # Analisis Pasar
         market = bot.analyze_market_condition()
         
         if market["valid"]:
             curr_sig = market["signal"]
-            last_sig = bot.load_last_signal()
+            last_sig = bot.load_state(bot.state_file)
             if curr_sig != last_sig:
-                is_rev = last_sig is not None
-                msg = format_sniper_card(market, is_reversal=is_rev)
-                send_telegram(msg)
-                bot.save_last_signal(curr_sig)
+                send_telegram(format_sniper_card(market))
+                bot.save_state(bot.state_file, curr_sig)
+                # Reset warning state supaya lamun engké aya warning deui bisa kaluar
+                bot.save_state(bot.warning_state_file, None)
                 logging.info(f"✅ Sinyal Eksekusi {curr_sig} dikirim!")
+                
         elif market["warning"]:
-            # Kirim aba-aba persiapan (bisa diatur supaya teu ngirim spam unggal menit ku simpen state samentawis)
-            logging.info(f"⚠️ Market nuju masihan aba-aba persiapan {market['signal']}")
-            send_telegram(format_warning_card(market))
-            # Jeda rada lila sakedik sangkan teu spam
-            time_module.sleep(120)
+            curr_warn = market["signal"]
+            last_warn = bot.load_state(bot.warning_state_file)
+            # Ngan kirim warning LAMUN sinyal warning-na BÉDA ti saméméhna (Miceun Spam!)
+            if curr_warn != last_warn:
+                send_telegram(format_warning_card(market))
+                bot.save_state(bot.warning_state_file, curr_warn)
+                logging.info(f"⚠️ Aba-aba Persiapan {curr_warn} dikirim!")
+        else:
+            # Lamun pasar netral/euweuh sinyal, reset saeutik state warning lamun perlu
+            pass
 
         time_module.sleep(60)
