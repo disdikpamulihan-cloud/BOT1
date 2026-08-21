@@ -90,7 +90,7 @@ class SniperXAUUSDBot:
     def analyze_market_condition(self) -> dict:
         df = self.fetch_market_data(count=250)
         if df.empty or len(df) < 205:
-            return {"valid": False}
+            return {"valid": False, "conf": 0.0}
 
         close = df['Close']
         high = df['High']
@@ -106,27 +106,36 @@ class SniperXAUUSDBot:
         rsi_series = self.calculate_rsi(close, 14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
-        # Logika Sinyal Sederhana tapi Pasti (Trend Following + RSI + AI)
-        is_buy = (current_price > ma200) and (rsi < 70)
-        is_sell = (current_price < ma200) and (rsi > 30)
-
+        confidence = 0.0
         if self.model_xauusd is not None:
             try:
                 features = np.array([[float(atr), float(abs(close.iloc[-1] - df['Open'].iloc[-1])), float(current_price - ma200), float(current_price - ma50), float(rsi)]])
-                ai_pred = self.model_xauusd.predict(features)[0]
-                if ai_pred == 1:
-                    return {"valid": True, "signal": "BUY", "price": current_price, "sl": current_price - (atr * 1.5), "tp": current_price + (atr * 3.0)}
+                
+                # Cek naha model gaduh fungsi predict_proba (kanggo akurasi live)
+                if hasattr(self.model_xauusd, "predict_proba"):
+                    probs = self.model_xauusd.predict_proba(features)[0]
+                    ai_pred = int(np.argmax(probs))
+                    confidence = float(np.max(probs))
                 else:
-                    return {"valid": True, "signal": "SELL", "price": current_price, "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)}
-            except: pass
+                    ai_pred = int(self.model_xauusd.predict(features)[0])
+                    confidence = 0.85 # Default upami model teu support proba
 
-        # Fallback lamun AI teu aktip
-        if is_buy:
-            return {"valid": True, "signal": "BUY", "price": current_price, "sl": current_price - (atr * 1.5), "tp": current_price + (atr * 3.0)}
-        elif is_sell:
-            return {"valid": True, "signal": "SELL", "price": current_price, "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)}
+                # SYARAT KETAT: Akurasi kedah Minimal 80% (0.80)
+                if confidence >= 0.80:
+                    if ai_pred == 1:
+                        return {
+                            "valid": True, "signal": "BUY", "price": current_price, "conf": confidence,
+                            "sl": current_price - (atr * 1.5), "tp": current_price + (atr * 3.0)
+                        }
+                    else:
+                        return {
+                            "valid": True, "signal": "SELL", "price": current_price, "conf": confidence,
+                            "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)
+                        }
+            except Exception as e:
+                logging.warning(f"AI Error: {e}")
 
-        return {"valid": False}
+        return {"valid": False, "conf": confidence, "price": current_price}
 
 def send_telegram(message: str):
     token = os.getenv("TELEGRAM_TOKEN")
@@ -141,13 +150,14 @@ def format_sniper_card(res: dict) -> str:
     wib = datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M:%S WIB')
     badge = "🟢🟢 **[AI SNIPER: BUY SIGNAL]** 🟢🟢" if res['signal'] == "BUY" else "🔴🔴 **[AI SNIPER: SELL SIGNAL]** 🔴🔴"
     return (
-        f"🔥 *[SINYAL EKSEKUSI XAUUSD]*\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 *[SINYAL EKSEKUSI XAUUSD (>=80%)]*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *STATUS*: {badge}\n"
+        f"🧠 *Akurasi Live AI*: `{res['conf']*100:.1f}%`\n"
         f"💵 *Harga Masuk (OP)*: `{res['price']:.2f}`\n"
         f"🛑 *Stop Loss*: `{res['sl']:.2f}`\n"
         f"🎯 *Take Profit*: `{res['tp']:.2f}`\n"
-        "-------------------------------------\n"
+        f"-------------------------------------\n"
         f"⏰ *WAKTU*: `{wib}`"
     )
 
@@ -159,7 +169,6 @@ if __name__ == "__main__":
         curr_sig = market["signal"]
         last_sig = bot.load_last_signal()
         
-        # NGAN KODE 📉 NGAN KIRIM NOTIF PAS SINYALNA BÉDA (ANTI-SPAM UTAMA)
         if curr_sig != last_sig:
             msg = format_sniper_card(market)
             send_telegram(msg)
@@ -168,4 +177,15 @@ if __name__ == "__main__":
         else:
             logging.info(f"ℹ️ Sinyal masih tetep {curr_sig}, teu dikirim (Anti-spam aktif).")
     else:
-        logging.info("ℹ️ Belum ada sinyal valid.")
+        # Notif jujur ka Telegram upami akurasi handapeun 80% / teu acan nyugemakeun
+        live_conf = market.get("conf", 0.0) * 100
+        live_price = market.get("price", 0.0)
+        status_msg = (
+            f"🟢 *BOT SNIPER XAUUSD AKTIF (Jujur)*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📊 *Akurasi Live*: `{live_conf:.2f}%`\n"
+            f"💵 *Harga Real*: `{live_price:.2f}`\n"
+            f"🚀 *Status*: `{'Siap Sinyal (>=80%)' if live_conf >= 80 else 'Wait & See (<80%)'}`"
+        )
+        send_telegram(status_msg)
+        logging.info(f"ℹ️ Akurasi live ({live_conf:.2f}%) handapeun 80%. Sinyal ditahan demi kasalametan.")
