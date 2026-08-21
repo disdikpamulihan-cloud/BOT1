@@ -31,10 +31,3 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python bot_signal.py
-
-      - name: Commit & Push Model/State Update
-        run: |
-          git config --global user.name "Bot1-Auto-Trainer"
-          git config --global user.email "bot1@github.com"
-          git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update Bot 1 AI Model and State" && git push)
