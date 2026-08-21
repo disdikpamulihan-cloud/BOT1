@@ -95,32 +95,43 @@ class SniperXAUUSDBot:
         close = df['Close']
         high = df['High']
         low = df['Low']
+        open_p = df['Open']
         current_price = close.iloc[-1]
 
+        # Kalkulasi indikator sami persis sapertos train_ai.py
         ma200 = close.rolling(window=200).mean().iloc[-1]
         ma50 = close.rolling(window=50).mean().iloc[-1]
         
         tr = np.maximum(high.values[1:] - low.values[1:], np.maximum(abs(high.values[1:] - close.values[:-1]), abs(low.values[1:] - close.values[:-1])))
-        atr = float(np.mean(tr[-14:]) if len(tr) >= 14 else (high.iloc[-1] - low.iloc[-1]))
+        atr = float(pd.Series(tr).rolling(window=14).mean().iloc[-1])
         
         rsi_series = self.calculate_rsi(close, 14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
+        
+        body_size = float(abs(close.iloc[-1] - open_p.iloc[-1]))
 
         confidence = 0.0
         if self.model_xauusd is not None:
             try:
-                features = np.array([[float(atr), float(abs(close.iloc[-1] - df['Open'].iloc[-1])), float(current_price - ma200), float(current_price - ma50), float(rsi)]])
+                # Susunan fitur PERSIS SARUA jeung train_ai.py
+                features = np.array([[
+                    atr, 
+                    body_size, 
+                    float(current_price - ma200), 
+                    float(current_price - ma50), 
+                    rsi
+                ]])
                 
-                # Cek naha model gaduh fungsi predict_proba (kanggo akurasi live)
+                # Baca probabilitas akurasi live tina model ensemble (VotingClassifier)
                 if hasattr(self.model_xauusd, "predict_proba"):
                     probs = self.model_xauusd.predict_proba(features)[0]
                     ai_pred = int(np.argmax(probs))
                     confidence = float(np.max(probs))
                 else:
                     ai_pred = int(self.model_xauusd.predict(features)[0])
-                    confidence = 0.85 # Default upami model teu support proba
+                    confidence = 0.85
 
-                # SYARAT KETAT: Akurasi kedah Minimal 80% (0.80)
+                # FILTER KETAT: Sinyal ngan dikirim lamun akurasi live minimal 80% (0.80)
                 if confidence >= 0.80:
                     if ai_pred == 1:
                         return {
@@ -133,8 +144,9 @@ class SniperXAUUSDBot:
                             "sl": current_price + (atr * 1.5), "tp": current_price - (atr * 3.0)
                         }
             except Exception as e:
-                logging.warning(f"AI Error: {e}")
+                logging.warning(f"AI Prediction Error: {e}")
 
+        # Upami handapeun 80%, mulihkeun data valid False tapi mawa info akurasi live
         return {"valid": False, "conf": confidence, "price": current_price}
 
 def send_telegram(message: str):
@@ -177,7 +189,7 @@ if __name__ == "__main__":
         else:
             logging.info(f"ℹ️ Sinyal masih tetep {curr_sig}, teu dikirim (Anti-spam aktif).")
     else:
-        # Notif jujur ka Telegram upami akurasi handapeun 80% / teu acan nyugemakeun
+        # Laporan jujur ka Telegram upami akurasi live handapeun 80%
         live_conf = market.get("conf", 0.0) * 100
         live_price = market.get("price", 0.0)
         status_msg = (
